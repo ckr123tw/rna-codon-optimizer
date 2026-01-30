@@ -3,7 +3,7 @@
 **AI-powered RNA sequence optimization using reinforcement learning and foundation models**
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
 
 ## Overview
 
@@ -134,7 +134,24 @@ If you use this pipeline, please cite:
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file
+**CC BY-NC 4.0** (Creative Commons Attribution-NonCommercial 4.0 International)
+
+This work is licensed for **academic and non-commercial use only**. 
+
+**You may:**
+- ✅ Use for academic research
+- ✅ Use for educational purposes
+- ✅ Modify and distribute (with attribution)
+- ✅ Use in non-profit organizations
+
+**You may NOT:**
+- ❌ Use in commercial products or services
+- ❌ Use for commercial profit
+- ❌ Use in for-profit companies without permission
+
+**For commercial licensing**, please contact [your contact information].
+
+See [LICENSE](LICENSE) file for full terms.
 
 ## Contact
 
