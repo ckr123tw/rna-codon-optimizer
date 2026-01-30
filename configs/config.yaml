@@ -1,0 +1,83 @@
+# RNA Codon Optimization Pipeline Configuration
+
+# Model Settings
+model:
+  name: "togethercomputer/evo-1-8k-base"
+  embedding_dim: 1024
+  pooling: "mean"  # Options: mean, max, cls
+
+# Critic Model
+critic:
+  hidden_dims: [512, 256]
+  dropout: 0.3
+  activation: "relu"  # Options: relu, gelu, tanh
+
+# Critic Training
+critic_training:
+  num_epochs: 50
+  batch_size: 32
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  train_split: 0.8
+
+# LoRA Configuration
+lora:
+  r: 16  # LoRA rank (lower = fewer parameters)
+  alpha: 32  # LoRA alpha (scaling factor)
+  dropout: 0.1
+  target_modules: ["q_proj", "v_proj"]  # Which attention modules to adapt
+
+# PPO Training
+ppo:
+  learning_rate: 0.00001
+  batch_size: 4
+  mini_batch_size: 1
+  gradient_accumulation_steps: 1
+  ppo_epochs: 4
+  max_grad_norm: 0.5
+  kl_penalty: "kl"  # Options: kl, abs, mse
+  cliprange: 0.2
+  cliprange_value: 0.2
+  vf_coef: 0.1
+  adap_kl_ctrl: true
+  init_kl_coef: 0.2
+  target_kl: 6.0
+
+# PPO Training Loop
+ppo_training:
+  num_epochs: 20
+  steps_per_epoch: 100
+
+# Data Settings
+data:
+  path: "data/supplementary_table1.xlsx"
+  sequence_column: "sequence"
+  te_column: "TE"
+  max_samples: null  # Set to integer to limit samples for testing
+
+# Generation Settings
+generation:
+  num_candidates: 10
+  max_length: 500
+  temperature: 0.8
+  top_k: 50
+  top_p: 0.95
+
+# Hardware
+hardware:
+  device: "auto"  # Options: auto, cuda, cpu
+  mixed_precision: true
+
+# Paths
+paths:
+  data_dir: "data"
+  model_dir: "models"
+  output_dir: "outputs"
+  
+# Logging
+logging:
+  level: "INFO"
+  save_checkpoints: true
+  checkpoint_frequency: 10  # Save every N epochs
+  use_wandb: false  # Set to true to use Weights & Biases
+  wandb_project: "rna-codon-optimization"
