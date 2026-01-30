@@ -4,12 +4,20 @@ This document outlines the roadmap for future development and scaling of the RNA
 
 ## 1. Advanced Conditioning
 
-### Cell Line and Tissue Specificity
-**Goal:** Optimize RNA sequences for specific cellular environments (e.g., HEK293, HeLa, Liver, Muscle).
-- **Implementation:**
-    - Train separate critic heads or conditional embeddings for different cell lines using cell-specific TE datasets.
-    - Integrate tissue-specific codon usage tables as prior priors in the generation step.
-    - **Data Source:** Expand dataset collection to include cell-specific ribosome profiling data (e.g., from disparate tissues in Zheng et al. 2025).
+### Cell Line Specificity ✅ IMPLEMENTED
+**Status:** Implemented and tested.
+- **What's done:**
+    - Cell line embeddings added to `MultiMetricCritic`
+    - `format_conditional_prompt` includes cell line in generation prompts
+    - `load_zheng_data` maps cell line names to indices
+    - End-to-end training tested with HEK293, HeLa, HepG2 cell lines
+
+### Tissue Specificity (Future)
+**Goal:** Optimize RNA sequences for specific tissues (Liver, Muscle, Brain, etc.).
+- **Not yet implemented.** Requires:
+    - Tissue-specific codon usage tables as generation priors
+    - Tissue-specific ribosome profiling datasets (beyond cell lines)
+    - Tissue embedding layer in critic (similar to cell line implementation)
 
 ### 5' and 3' UTR Co-Optimization
 **Goal:** Jointly optimize UTRs and CDS for maximum stability and translation.
