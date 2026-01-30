@@ -12,12 +12,13 @@ This document outlines the roadmap for future development and scaling of the RNA
     - `load_zheng_data` maps cell line names to indices
     - End-to-end training tested with HEK293, HeLa, HepG2 cell lines
 
-### Tissue Specificity (Future)
-**Goal:** Optimize RNA sequences for specific tissues (Liver, Muscle, Brain, etc.).
-- **Not yet implemented.** Requires:
-    - Tissue-specific codon usage tables as generation priors
-    - Tissue-specific ribosome profiling datasets (beyond cell lines)
-    - Tissue embedding layer in critic (similar to cell line implementation)
+### Tissue Specificity ✅ IMPLEMENTED
+**Status:** Implemented and tested.
+- **What's done:**
+    - Tissue types (muscle, brain, neurons, kidney) added to unified context embedding
+    - `create_toy_dataset.py` extracts tissue columns from Atlas dataset
+    - Existing cell_line embedding architecture handles tissues seamlessly
+    - End-to-end training verified with 8 biological contexts
 
 ### 5' and 3' UTR Co-Optimization
 **Goal:** Jointly optimize UTRs and CDS for maximum stability and translation.
