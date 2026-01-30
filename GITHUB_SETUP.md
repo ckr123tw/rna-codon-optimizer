@@ -1,39 +1,47 @@
-# GitHub Setup Guide
+# Complete Git Setup and GitHub Upload Guide
 
-## Prerequisites
+## ⚠️ STEP 0: Install Git (REQUIRED FIRST!)
 
-1. **Install Git**
-   - Download from: https://git-scm.com/download/win
-   - Or use: `winget install --id Git.Git -e --source winget`
-   - Restart your terminal after installation
+Git is not installed on your system. You need to install it first.
 
-2. **GitHub Account**
-   - Create account at: https://github.com
-   - Configure Git:
-     ```bash
-     git config --global user.name "Your Name"
-     git config --global user.email "your.email@example.com"
-     ```
+### Install Git for Windows
 
-## Upload to GitHub
+**Option 1: Using winget (Recommended)**
+```powershell
+winget install --id Git.Git -e --source winget
+```
 
-### Option 1: Create New Repository on GitHub
+**Option 2: Direct Download**
+1. Download from: https://git-scm.com/download/win
+2. Run the installer
+3. Use default settings (just click "Next")
 
-1. Go to: https://github.com/new
-2. Repository name: `rna-codon-optimizer`
-3. Description: "AI-powered RNA sequence optimization using reinforcement learning"
-4. Keep it Public (or Private)
-5. **DO NOT** initialize with README (we already have one)
-6. Click "Create repository"
+**After installation:**
+- **CLOSE and REOPEN PowerShell** (important!)
+- Verify: `git --version`
 
-### Option 2: Push to Existing Repository
+---
 
-If you already have a repository at https://github.com/ckr123tw/rna-codon-optimizer:
+## STEP 1: Configure Git (First Time Only)
 
-```bash
+```powershell
+# Set your name and email
+git config --global user.name "Your Name"
+git config --global user.email "your.email@example.com"
+
+# Configure credential storage
+git config --global credential.helper manager-core
+```
+
+---
+
+## STEP 2: Initialize Git Repository
+
+```powershell
+# Navigate to project
 cd C:\Users\ckr12\.gemini\antigravity\scratch\rna-codon-optimizer
 
-# Initialize git (if not already done)
+# Initialize Git
 git init
 
 # Add all files
@@ -41,103 +49,154 @@ git add .
 
 # Create first commit
 git commit -m "Initial commit: RNA codon optimization pipeline with multi-metric support"
+```
 
-# Add remote (replace with your actual repo URL)
+---
+
+## STEP 3: Create GitHub Repository
+
+1. **Go to:** https://github.com/new
+2. **Repository name:** `rna-codon-optimizer`
+3. **Description:** "AI-powered RNA sequence optimization using reinforcement learning"
+4. **Visibility:** Public (or Private)
+5. **License:** None (we have our own)
+6. **DO NOT** check "Add README" or "Add .gitignore"
+7. Click **"Create repository"**
+
+---
+
+## STEP 4: Connect to GitHub
+
+After creating the repo on GitHub, you'll see setup instructions. Use these commands:
+
+```powershell
+# Add remote
 git remote add origin https://github.com/ckr123tw/rna-codon-optimizer.git
 
-# Push to GitHub
+# Rename branch to main
 git branch -M main
+```
+
+---
+
+## STEP 5: Create Personal Access Token
+
+**GitHub doesn't accept passwords. You need a token.**
+
+1. **Create token:** https://github.com/settings/tokens/new
+2. **Settings:**
+   - Note: `rna-codon-optimizer`
+   - Expiration: 90 days
+   - ✅ Check `repo` (Full control)
+3. Click **"Generate token"**
+4. **COPY THE TOKEN** (starts with `ghp_`)
+5. **Save it somewhere safe** - you won't see it again!
+
+---
+
+## STEP 6: Push to GitHub
+
+```powershell
+# Push to GitHub
 git push -u origin main
 ```
 
-### Option 3: Create Completely New Repository
+**When prompted:**
+- **Username:** `ckr123tw`
+- **Password:** `ghp_xxxxxxx...` (PASTE YOUR TOKEN, NOT PASSWORD!)
 
-```bash
+---
+
+## STEP 7: Verify
+
+Visit: https://github.com/ckr123tw/rna-codon-optimizer
+
+You should see all your files!
+
+---
+
+## Alternative: Use GitHub Desktop (No Command Line)
+
+If you prefer a GUI:
+
+1. **Download:** https://desktop.github.com/
+2. **Install and sign in**
+3. **File → Add Local Repository**
+4. Select: `C:\Users\ckr12\.gemini\antigravity\scratch\rna-codon-optimizer`
+5. **Publish repository**
+
+---
+
+## Quick Troubleshooting
+
+### "git: command not found"
+- Install Git (Step 0)
+- Restart PowerShell
+
+### "not a git repository"
+- Run `git init` in the project folder
+- Make sure you're in the right directory: `pwd`
+
+### "Password authentication not supported"
+- Use Personal Access Token instead of password
+- Follow Step 5
+
+### "fatal: repository not found"
+- Create the repository on GitHub first (Step 3)
+- Check the URL is correct
+
+### "Permission denied"
+- Make sure you have access to the repository
+- Check your token has `repo` scope
+
+---
+
+## Complete Example (All Steps)
+
+```powershell
+# 0. Install Git first (winget or download)
+winget install --id Git.Git -e --source winget
+
+# Close and reopen PowerShell!
+
+# 1. Configure Git
+git config --global user.name "Your Name"
+git config --global user.email "your.email@example.com"
+git config --global credential.helper manager-core
+
+# 2. Initialize repository
 cd C:\Users\ckr12\.gemini\antigravity\scratch\rna-codon-optimizer
-
-# Initialize
 git init
-
-# Add files
 git add .
-
-# Commit
 git commit -m "Initial commit: RNA codon optimization pipeline"
 
-# Create new repo on GitHub first, then:
-git remote add origin https://github.com/ckr123tw/YOUR-NEW-REPO-NAME.git
+# 3. Create repo on GitHub (via web interface)
+# Visit: https://github.com/new
+
+# 4. Connect and push
+git remote add origin https://github.com/ckr123tw/rna-codon-optimizer.git
 git branch -M main
 git push -u origin main
+
+# When prompted, use your username and PERSONAL ACCESS TOKEN
 ```
 
-## Authentication
+---
 
-### Using Personal Access Token (Recommended)
+## Need Help?
 
-1. Generate token:
-   - Go to: https://github.com/settings/tokens
-   - Click "Generate new token (classic)"
-   - Select scopes: `repo` (all)
-   - Generate and copy token
+If you get stuck, you can use GitHub CLI instead:
 
-2. When pushing, use token as password:
-   ```
-   Username: ckr123tw
-   Password: [paste your token]
-   ```
-
-### Using GitHub CLI (Alternative)
-
-```bash
+```powershell
 # Install GitHub CLI
 winget install --id GitHub.cli
 
-# Authenticate
+# Authenticate (opens browser)
 gh auth login
 
-# Push repository
+# Create and push repo in one command
 cd C:\Users\ckr12\.gemini\antigravity\scratch\rna-codon-optimizer
 gh repo create rna-codon-optimizer --public --source=. --remote=origin --push
 ```
 
-## Verify Upload
-
-After pushing, visit:
-https://github.com/ckr123tw/rna-codon-optimizer
-
-You should see:
-- All source files
-- README.md as homepage
-- GitHub will automatically detect Python project
-
-## Next Steps
-
-1. **Add Topics** (on GitHub web interface):
-   - bioinformatics
-   - machine-learning
-   - rna
-   - reinforcement-learning
-   - deep-learning
-
-2. **Enable GitHub Actions** (optional):
-   - Add `.github/workflows/tests.yml` for automated testing
-
-3. **Create Release**:
-   ```bash
-   git tag -a v1.0.0 -m "Initial release with multi-metric support"
-   git push origin v1.0.0
-   ```
-
-## Troubleshooting
-
-**Error: "git: command not found"**
-- Install Git for Windows
-- Restart PowerShell
-
-**Error: "Permission denied"**
-- Check your authentication token
-- Ensure you have push access to the repository
-
-**Error: "Repository not found"**
-- Verify the repository exists on GitHub
-- Check the remote URL: `git remote -v`
+This is the easiest method if you're having authentication issues!

@@ -79,20 +79,19 @@ class RNAPPOTrainer:
         self,
         generated_sequence: str,
         target_efficiency: float,
-        amino_acid_sequence: str
+        amino_acid_sequence: str,
+        utr5: Optional[str] = None,
+        utr3: Optional[str] = None
     ) -> float:
         """
-        Compute reward for a generated sequence.
-        
-        Reward components:
-            1. Translation efficiency match: -|predicted_TE - target_TE|
-            2. (Optional) Sequence validity: check if amino acid sequence is preserved
-            3. (Optional) Structural constraints: GC content, secondary structure, etc.
+        Compute reward for a generated RNA sequence.
         
         Args:
             generated_sequence: Generated RNA sequence
             target_efficiency: Target translation efficiency
             amino_acid_sequence: Expected amino acid sequence
+            utr5: Expected 5'UTR (for validation)
+            utr3: Expected 3'UTR (for validation)
             
         Returns:
             Reward value (higher is better)
@@ -102,23 +101,35 @@ class RNAPPOTrainer:
             embedding = self.embedder.embed_sequence(generated_sequence, return_numpy=False)
             embedding = embedding.unsqueeze(0).to(self.device)
         except Exception as e:
-            print(f"Error embedding sequence: {e}")
-            return -10.0  # Large penalty for invalid sequences
+            # Large penalty for invalid sequences
+            return -100.0
         
-        # Predict translation efficiency using critic
+        # Predict translation efficiency
         with torch.no_grad():
             predicted_te = self.critic_model(embedding).item()
         
-        # Reward 1: TE match (negative L1 distance)
+        # Compute reward based on how close to target
         te_reward = -abs(predicted_te - target_efficiency)
         
-        # Reward 2: Sequence validity (bonus for maintaining amino acid sequence)
-        # TODO: Implement amino acid sequence validation from CDS
-        # For now, we just use TE match
-        validity_bonus = 0.0
+        # Validate amino acid sequence preservation
+        validation_bonus = 0.0
+        if utr5 is not None and utr3 is not None:
+            from ..sequence_generation.validation import validate_full_rna_sequence
+            
+            validation = validate_full_rna_sequence(
+                generated_sequence,
+                utr5,
+                utr3,
+                amino_acid_sequence,
+                allow_stop=True
+            )
+            
+            if validation['is_valid']:
+                validation_bonus = 2.0  # Bonus for valid sequence
+            else:
+                validation_bonus = -15.0  # Large penalty for invalid
         
-        # Combined reward
-        total_reward = te_reward + validity_bonus
+        total_reward = te_reward + validation_bonus
         
         return total_reward
     

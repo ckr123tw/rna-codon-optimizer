@@ -57,7 +57,9 @@ class MultiMetricRewardFunction:
         self,
         generated_sequence: str,
         targets: Dict[str, float],
-        amino_acid_sequence: Optional[str] = None
+        amino_acid_sequence: Optional[str] = None,
+        utr5: Optional[str] = None,
+        utr3: Optional[str] = None
     ) -> float:
         """
         Compute multi-metric reward for a generated sequence.
@@ -66,6 +68,8 @@ class MultiMetricRewardFunction:
             generated_sequence: Generated RNA sequence
             targets: Dictionary of target values for each metric
             amino_acid_sequence: Expected amino acid sequence (for validation)
+            utr5: Expected 5'UTR (for validation)
+            utr3: Expected 3'UTR (for validation)
             
         Returns:
             Combined reward value (higher is better)
@@ -98,8 +102,24 @@ class MultiMetricRewardFunction:
                 total_reward += weighted_reward
                 metric_rewards[metric] = metric_reward
         
-        # Optional: Add bonus for sequence validity
-        # TODO: Validate amino acid sequence preservation
+        # Validate amino acid sequence preservation
+        if amino_acid_sequence is not None and utr5 is not None and utr3 is not None:
+            from ..sequence_generation.validation import validate_full_rna_sequence
+            
+            validation = validate_full_rna_sequence(
+                generated_sequence,
+                utr5,
+                utr3,
+                amino_acid_sequence,
+                allow_stop=True
+            )
+            
+            if validation['is_valid']:
+                # Bonus for preserving amino acid sequence
+                total_reward += 2.0
+            else:
+                # Large penalty for incorrect amino acid sequence
+                total_reward -= 15.0
         
         return total_reward
 
