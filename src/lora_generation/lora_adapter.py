@@ -181,12 +181,14 @@ def format_conditional_prompt(
     utr3: str,
     amino_acid_sequence: str,
     target_efficiency: float,
+    cell_line: Optional[str] = None,
     include_instructions: bool = True
 ) -> str:
     """
     Format a conditioning prompt for the LoRA model.
     
     The prompt includes:
+        - Cell Line (optional)
         - 5'UTR (fixed)
         - Target translation efficiency
         - Amino acid sequence constraint
@@ -197,6 +199,7 @@ def format_conditional_prompt(
         utr3: 3' UTR sequence
         amino_acid_sequence: Amino acid sequence to encode
         target_efficiency: Desired translation efficiency
+        cell_line: Target cell line name (e.g., 'HEK293')
         include_instructions: Whether to include natural language instructions
         
     Returns:
@@ -205,13 +208,18 @@ def format_conditional_prompt(
     prompt = ""
     
     if include_instructions:
-        prompt += f"Generate an RNA sequence with translation efficiency {target_efficiency:.2f}.\n"
+        prompt += f"Generate an RNA sequence with translation efficiency {target_efficiency:.2f}"
+        if cell_line:
+            prompt += f" in {cell_line} cells"
+        prompt += ".\n"
         prompt += f"Amino acid sequence: {amino_acid_sequence}\n"
     
     # Convert to DNA for Evo model
     utr5_dna = utr5.replace('U', 'T')
     utr3_dna = utr3.replace('U', 'T')
     
+    if cell_line:
+        prompt += f"Cell Line: {cell_line}\n"
     prompt += f"5'UTR: {utr5_dna}\n"
     prompt += f"CDS encoding: {amino_acid_sequence}\n"
     prompt += f"Target TE: {target_efficiency:.2f}\n"

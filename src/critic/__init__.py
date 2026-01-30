@@ -6,6 +6,7 @@ from .dataset import (
     load_zheng_data,
     create_data_loaders,
 )
+from .multi_metric_critic import MultiMetricCritic, MultiMetricTrainer
 
 __all__ = [
     'TranslationEfficiencyCritic',

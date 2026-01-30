@@ -25,24 +25,37 @@ class MultiMetricCritic(nn.Module):
         metrics: List[str] = ['translation_efficiency', 'half_life'],
         head_dims: List[int] = [128],
         dropout: float = 0.3,
-        activation: str = "relu"
+        activation: str = "relu",
+        num_cell_lines: int = 0,
+        cell_embedding_dim: int = 32
     ):
         """
         Initialize multi-metric critic.
         
         Args:
-            input_dim: Dimension of input embeddings
+            input_dim: Dimension of RNA embeddings
             shared_dims: Hidden dimensions for shared encoder
             metrics: List of metrics to predict
             head_dims: Hidden dimensions for each metric head
             dropout: Dropout probability
             activation: Activation function
+            num_cell_lines: Number of cell lines to embed (0 to disable)
+            cell_embedding_dim: Dimension of cell line embeddings
         """
         super().__init__()
         
         self.input_dim = input_dim
         self.metrics = metrics
         self.n_metrics = len(metrics)
+        self.num_cell_lines = num_cell_lines
+        
+        # Cell Line Embedding
+        if num_cell_lines > 0:
+            self.cell_embedding = nn.Embedding(num_cell_lines, cell_embedding_dim)
+            self.combined_input_dim = input_dim + cell_embedding_dim
+        else:
+            self.cell_embedding = None
+            self.combined_input_dim = input_dim
         
         # Activation function
         if activation == "relu":
@@ -56,7 +69,7 @@ class MultiMetricCritic(nn.Module):
         
         # Shared encoder
         encoder_layers = []
-        prev_dim = input_dim
+        prev_dim = self.combined_input_dim
         for hidden_dim in shared_dims:
             encoder_layers.extend([
                 nn.Linear(prev_dim, hidden_dim),
@@ -96,21 +109,43 @@ class MultiMetricCritic(nn.Module):
     def forward(
         self,
         embeddings: torch.Tensor,
+        cell_line_indices: Optional[torch.Tensor] = None,
         return_dict: bool = True
     ) -> Dict[str, torch.Tensor]:
         """
-        Forward pass through the multi-metric critic.
+        Forward pass.
         
         Args:
-            embeddings: RNA sequence embeddings [batch_size, input_dim]
+            embeddings: RNA embeddings [B, D]
+            cell_line_indices: Optional cell line IDs [B]
             return_dict: If True, return dict; else return stacked tensor
             
         Returns:
             Dictionary mapping metric names to predictions [batch_size, 1]
             or stacked tensor [batch_size, n_metrics]
         """
+        # Combine inputs if cell line is used
+        # Combine inputs if cell line is used
+        if self.cell_embedding is not None:
+             if cell_line_indices is not None:
+                cell_emb = self.cell_embedding(cell_line_indices)
+                x = torch.cat([embeddings, cell_emb], dim=1)
+             else:
+                # Fallback: concatenate zeros if cell info missing but model expects it
+                # Create zeros on correct device
+                device = embeddings.device
+                batch_size = embeddings.shape[0]
+                zeros = torch.zeros(
+                    batch_size, 
+                    self.cell_embedding.embedding_dim, 
+                    device=device
+                )
+                x = torch.cat([embeddings, zeros], dim=1)
+        else:
+            x = embeddings
+            
         # Shared encoding
-        shared_features = self.shared_encoder(embeddings)
+        shared_features = self.shared_encoder(x)
         
         # Metric-specific predictions
         predictions = {}
@@ -126,14 +161,16 @@ class MultiMetricCritic(nn.Module):
     def predict(
         self,
         embeddings: torch.Tensor,
+        cell_line_indices: Optional[torch.Tensor] = None,
         metrics: Optional[List[str]] = None,
         return_numpy: bool = False
     ) -> Dict[str, np.ndarray]:
         """
-        Make predictions for specified metrics.
+        Make predictions.
         
         Args:
             embeddings: Input embeddings [batch_size, input_dim]
+            cell_line_indices: Optional cell line IDs [batch_size]
             metrics: Which metrics to predict (default: all)
             return_numpy: If True, return numpy arrays
             
@@ -142,7 +179,7 @@ class MultiMetricCritic(nn.Module):
         """
         self.eval()
         with torch.no_grad():
-            all_preds = self.forward(embeddings, return_dict=True)
+            all_preds = self.forward(embeddings, cell_line_indices=cell_line_indices, return_dict=True)
         
         if metrics is None:
             metrics = self.metrics
@@ -222,9 +259,10 @@ class MultiMetricTrainer:
     ) -> Dict[str, float]:
         """
         Train for one epoch.
+        Expects train_loader to yield (inputs_dict, targets_dict).
         
         Args:
-            train_loader: DataLoader with (embeddings, targets_dict) tuples
+            train_loader: DataLoader with (inputs_dict, targets_dict) tuples
             verbose: Whether to print progress
             
         Returns:
@@ -235,13 +273,18 @@ class MultiMetricTrainer:
         epoch_losses['total'] = 0.0
         num_batches = 0
         
-        for batch_idx, (embeddings, targets_dict) in enumerate(train_loader):
-            # Move to device
-            embeddings = embeddings.to(self.device)
+        for batch_idx, (inputs_dict, targets_dict) in enumerate(train_loader):
+            # Move inputs to device
+            emb = inputs_dict['embedding'].to(self.device)
+            cell_idx = inputs_dict.get('cell_line_idx')
+            if cell_idx is not None:
+                cell_idx = cell_idx.to(self.device)
+            
+            # Move targets
             targets_dict = {k: v.to(self.device) for k, v in targets_dict.items()}
             
             # Forward pass
-            predictions = self.model(embeddings, return_dict=True)
+            predictions = self.model(emb, cell_line_indices=cell_idx, return_dict=True)
             
             # Compute loss for each metric
             total_loss = 0.0
@@ -296,11 +339,15 @@ class MultiMetricTrainer:
         all_targets = {m: [] for m in self.model.metrics}
         
         with torch.no_grad():
-            for embeddings, targets_dict in val_loader:
-                embeddings = embeddings.to(self.device)
+            for inputs_dict, targets_dict in val_loader:
+                emb = inputs_dict['embedding'].to(self.device)
+                cell_idx = inputs_dict.get('cell_line_idx')
+                if cell_idx is not None:
+                    cell_idx = cell_idx.to(self.device)
+                
                 targets_dict = {k: v.to(self.device) for k, v in targets_dict.items()}
                 
-                predictions = self.model(embeddings, return_dict=True)
+                predictions = self.model(emb, cell_line_indices=cell_idx, return_dict=True)
                 
                 for metric in self.model.metrics:
                     if metric in targets_dict:

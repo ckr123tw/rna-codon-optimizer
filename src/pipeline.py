@@ -12,7 +12,7 @@ import json
 # Import pipeline components
 from src.sequence_generation import RNASequenceGenerator
 from src.sequence_generation.evo_embedder import EvoEmbedder
-from src.critic import TranslationEfficiencyCritic, load_zheng_data, create_data_loaders, CriticTrainer
+from src.critic import MultiMetricCritic, MultiMetricTrainer, load_zheng_data, create_data_loaders
 from src.lora_generation.lora_adapter import EvoLoRAAdapter, format_conditional_prompt
 from src.ppo_training.ppo_trainer import RNAPPOTrainer, PPOTrainingConfig
 
@@ -61,6 +61,10 @@ class RNACodonOptimizationPipeline:
         
         self.data_path = data_path
         self.trained = False
+        
+        # Cell line support
+        self.cell_line_map = {}
+        self.num_cell_lines = 0
     
     def step1_prepare_data(
         self,
@@ -88,9 +92,22 @@ class RNACodonOptimizationPipeline:
             self.sequences = [f"MOCK_SEQ_{i}" for i in range(n_samples)]
         else:
             # Load real data
-            df = load_zheng_data(self.data_path, max_samples=max_samples)
+            # Check for cell line column if supported
+            cell_line_col = "cell_line" # Default assumption or make configurable
+            df, self.cell_line_map = load_zheng_data(
+                self.data_path, 
+                max_samples=max_samples,
+                cell_line_column=cell_line_col
+            )
             self.sequences = df['sequence'].tolist()
             self.te_values = df['TE'].values
+            self.num_cell_lines = len(self.cell_line_map)
+            
+            # Store indices if available
+            if 'cell_line_idx' in df.columns:
+                self.cell_line_indices = df['cell_line_idx'].values
+            else:
+                self.cell_line_indices = None
             
             # Generate embeddings
             print(f"\nGenerating embeddings for {len(self.sequences)} sequences...")
@@ -137,25 +154,29 @@ class RNACodonOptimizationPipeline:
         print("=" * 60)
         
         # Create critic model
-        self.critic = TranslationEfficiencyCritic(
+        self.critic = MultiMetricCritic(
             input_dim=self.embeddings.shape[1],
-            hidden_dims=hidden_dims,
-            dropout=0.3
+            metrics=['translation_efficiency'], # Expanding to multi-metric later
+            shared_dims=hidden_dims,
+            dropout=0.3,
+            num_cell_lines=self.num_cell_lines,
+            cell_embedding_dim=32 if self.num_cell_lines > 0 else 0
         )
         
-        print(f"Critic architecture: {self.embedder.embedding_dim} -> {' -> '.join(map(str, hidden_dims))} -> 1")
+        print(f"Critic architecture initialized for {self.num_cell_lines} cell lines.")
         print(f"Total parameters: {self.critic.get_num_parameters():,}")
         
         # Create data loaders
         train_loader, val_loader = create_data_loaders(
             self.embeddings,
             self.te_values,
+            cell_line_indices=getattr(self, 'cell_line_indices', None),
             train_split=0.8,
             batch_size=batch_size
         )
         
         # Create trainer
-        trainer = CriticTrainer(
+        trainer = MultiMetricTrainer(
             self.critic,
             learning_rate=learning_rate,
             device=str(self.device)
@@ -306,6 +327,7 @@ class RNACodonOptimizationPipeline:
         utr3: str,
         amino_acid_sequence: str,
         target_efficiency: float,
+        cell_line: Optional[str] = None,
         num_candidates: int = 10
     ) -> Dict:
         """
@@ -316,6 +338,7 @@ class RNACodonOptimizationPipeline:
             utr3: 3' UTR sequence
             amino_acid_sequence: Amino acid sequence to encode
             target_efficiency: Target translation efficiency
+            cell_line: Target cell line name (e.g. 'HEK293')
             num_candidates: Number of candidate sequences to generate
             
         Returns:
@@ -329,7 +352,8 @@ class RNACodonOptimizationPipeline:
             utr5=utr5,
             utr3=utr3,
             amino_acid_sequence=amino_acid_sequence,
-            target_efficiency=target_efficiency
+            target_efficiency=target_efficiency,
+            cell_line=cell_line
         )
         
         # Generate candidates using LoRA model
@@ -339,12 +363,28 @@ class RNACodonOptimizationPipeline:
             temperature=0.8
         )
         
+        # Prepare cell line index if needed
+        cell_idx_tensor = None
+        if cell_line and self.cell_line_map:
+            if cell_line in self.cell_line_map:
+                idx = self.cell_line_map[cell_line]
+                cell_idx_tensor = torch.tensor([idx], device=self.device)
+            else:
+                print(f"Warning: Cell line '{cell_line}' not in training data. Using generic prediction.")
+
         # Score candidates with critic
         scores = []
         for seq in candidates:
             embedding = self.embedder.embed_sequence(seq, return_numpy=False)
             embedding = embedding.unsqueeze(0).to(self.device)
-            pred_te = self.critic(embedding).item()
+            
+            # Predict
+            pred_dict = self.critic.predict(
+                embedding, 
+                cell_line_indices=cell_idx_tensor
+            )
+            # Default to TE metric
+            pred_te = pred_dict['translation_efficiency'].item()
             scores.append(pred_te)
         
         # Find best sequence
