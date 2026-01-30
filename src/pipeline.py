@@ -243,6 +243,8 @@ class RNACodonOptimizationPipeline:
             learning_rate=1e-5
         )
         
+        from src.sequence_generation.codon_table import reverse_translate_cds
+
         self.ppo_trainer = RNAPPOTrainer(
             lora_model=self.lora_model,
             critic_model=self.critic,
@@ -252,14 +254,39 @@ class RNACodonOptimizationPipeline:
         )
         
         # Generate training prompts from dataset
-        # For demonstration, use a subset
-        n_train = min(100, len(self.sequences))
+        print("Generating training data from dataset sequences...")
+        n_train = min(1000, len(self.sequences)) # Use more samples if available
         sample_indices = np.random.choice(len(self.sequences), n_train, replace=False)
         
-        # Create dummy prompts (in practice, you'd format with actual UTRs)
-        prompts = [f"Generate RNA with TE {self.te_values[i]:.2f}" for i in sample_indices]
-        target_tes = [self.te_values[i] for i in sample_indices]
-        aa_seqs = ["MYPFIRTARM"] * n_train  # Dummy amino acid sequences
+        prompts = []
+        target_tes = []
+        aa_seqs = []
+        
+        for idx in sample_indices:
+            seq = self.sequences[idx]
+            te = self.te_values[idx]
+            
+            # Assuming sequence is CDS + UTRs or just CDS
+            # For simplicity in this demo, we assume the input sequence is valid CDS or we extract CDS
+            # If full sequence, we might need to know UTR lengths. 
+            # For now, let's try to translate the whole sequence or handle errors
+            try:
+                # Naive attempt: assume sequence is CDS
+                # In a real pipeline, you would have a separate column for Amino Acids or CDS
+                aa_seq = reverse_translate_cds(seq)
+                
+                # Create prompt
+                prompts.append(f"Generate RNA with TE {te:.2f}")
+                target_tes.append(te)
+                aa_seqs.append(aa_seq)
+            except Exception:
+                # If translation fails (e.g. valid UTRs but restricted chars, or non-multiple of 3)
+                continue
+                
+        if len(prompts) == 0:
+            raise ValueError("No valid sequences found for training! Ensure data contains valid CDS.")
+            
+        print(f"Prepared {len(prompts)} training samples with constraints.")
         
         # Train
         self.ppo_trainer.train(
