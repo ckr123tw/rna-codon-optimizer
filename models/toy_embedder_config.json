@@ -1,0 +1,6 @@
+{
+  "model_type": "toy",
+  "embedding_dim": 1024,
+  "description": "Toy embedder returns random 1024-dim embeddings for testing",
+  "note": "For real training, replace with actual Evo-1-8k model from HuggingFace"
+}

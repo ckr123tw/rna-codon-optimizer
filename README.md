@@ -32,17 +32,38 @@ cd rna-codon-optimizer
 # Install dependencies
 pip install -r requirements.txt
 
-# Create toy dataset from downloaded papers (optional)
-python create_toy_dataset.py
+# Generate toy weights and data for testing
+python scripts/generate_toy_weights.py
 
-# Run training with mock model (for testing)
+# Run training with toy data (mock model - no large downloads)
 ./run_training.sh --data_path data/toy_dataset.csv --model_name mock
 
-# Run full pipeline with real model
+# Run full pipeline with real Evo-1-8k model (requires ~16GB GPU)
 ./run_training.sh --data_path data/toy_dataset.csv
 ```
 
 > **WSL Users:** The `run_training.sh` script automatically sets `LD_LIBRARY_PATH` to avoid GLIBCXX version errors common with Miniforge environments.
+
+## Test Setup (Toy Data & Weights)
+
+The repository includes scripts to generate toy artifacts for testing:
+
+| Artifact | Location | Purpose |
+|----------|----------|---------|
+| Toy Dataset | `data/toy_dataset.csv` | 1800 samples with TE, Half-Life, cell lines & tissues |
+| Toy Critic | `models/toy_critic.pt` | Pre-initialized critic model (~738K params) |
+| Embedder Config | `models/toy_embedder_config.json` | Mock embedder configuration |
+
+### For Real Training
+
+Replace the following when you have actual data and compute:
+
+| Component | Toy Version | Replace With |
+|-----------|-------------|--------------|
+| **Data** | `data/toy_dataset.csv` | Your TE/Half-life dataset (see Datasets section) |
+| **Model** | `--model_name mock` | Remove flag to use real Evo-1-8k from HuggingFace |
+| **Critic** | `models/toy_critic.pt` | Will be overwritten during training |
+| **GPU** | CPU/small GPU | NVIDIA A100 40GB+ recommended for full training |
 
 ## Usage
 

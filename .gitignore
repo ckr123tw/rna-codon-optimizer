@@ -43,6 +43,7 @@ data/*.csv
 data/*.h5
 data/*.pkl
 !data/README.md
+!data/toy_dataset.csv
 
 # Model checkpoints (too large for git)
 models/*.pt
@@ -50,6 +51,8 @@ models/*.pth
 models/*.ckpt
 models/*.safetensors
 !models/.gitkeep
+!models/toy_*.pt
+!models/toy_*.json
 
 # Outputs
 outputs/
