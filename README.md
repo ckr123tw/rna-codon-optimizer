@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" width="400" alt="AI RNA Optimizer Logo">
+</p>
+
 # RNA Codon Optimization Pipeline
 
 **AI-powered RNA sequence optimization using reinforcement learning and foundation models**
