@@ -6,7 +6,7 @@ This module handles codon selection, sequence assembly, and RNA embedding.
 
 from .codon_table import (
     CODON_TABLE,
-    HUMAN_CODON_USAGE,
+    HUMAN_CODON_WEIGHTS,
     get_random_codon,
     translate_amino_acid_to_cds,
     reverse_translate_codon,
@@ -26,7 +26,7 @@ from .validation import (
 
 __all__ = [
     'CODON_TABLE',
-    'HUMAN_CODON_USAGE',
+    'HUMAN_CODON_WEIGHTS',
     'get_random_codon',
     'translate_amino_acid_to_cds',
     'validate_rna_sequence',

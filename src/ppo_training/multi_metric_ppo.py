@@ -194,12 +194,13 @@ class MultiMetricPPOTrainer:
         """
         # Generate sequences
         generated_sequences = []
-        for prompt in prompts:
+        for prompt, aa_seq in zip(prompts, amino_acid_sequences):
             seqs = self.lora_model.generate_sequences(
                 prompt=prompt,
                 num_sequences=1,
                 max_length=500,
-                temperature=0.8
+                temperature=0.8,
+                amino_acid_constraint=aa_seq
             )
             generated_sequences.append(seqs[0] if seqs else "")
         

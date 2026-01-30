@@ -5,11 +5,12 @@ Enables efficient fine-tuning of the foundation model for conditional generation
 
 import torch
 import torch.nn as nn
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, LogitsProcessorList
 from peft import LoraConfig, get_peft_model, TaskType
 from typing import Optional, List
 import random
 
+from ..sequence_generation.constrained_decoding import StatefulCodonConstraintLogitsProcessor
 
 class EvoLoRAAdapter:
     """
@@ -32,67 +33,55 @@ class EvoLoRAAdapter:
             model_name: Hugging Face model identifier
             lora_r: LoRA rank (lower = fewer parameters)
             lora_alpha: LoRA alpha parameter (scaling factor)
-            lora_dropout: Dropout for LoRA layers
-            target_modules: Which modules to apply LoRA to (default: attention)
-            device: Device to use
+            lora_dropout: Dropout probability for LoRA layers
+            target_modules: List of modules to apply LoRA to. If None, uses default for Evo.
+            device: Device to use ('cuda' or 'cpu')
         """
+        self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
         self.model_name = model_name
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
         
-        # Auto-detect device
-        if device is None:
-            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        else:
-            self.device = torch.device(device)
+        # Load tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         
-        print(f"Initializing Evo model with LoRA: {model_name}")
-        print(f"  LoRA r={lora_r}, alpha={lora_alpha}, dropout={lora_dropout}")
-        print(f"  Device: {self.device}")
-        
-        # Load base model and tokenizer
+        # Load base model
+        # Note: Evo is a large model, ensure sufficient memory
         try:
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                model_name,
-                trust_remote_code=True
-            )
-            
-            # Load as causal LM for generation
             self.base_model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 trust_remote_code=True,
-                torch_dtype=torch.float32  # Use float32 for stability
+                torch_dtype=torch.float16 if self.device == 'cuda' else torch.float32,
+                device_map="auto" if self.device == 'cuda' else None
             )
-            
-            # Configure LoRA
-            if target_modules is None:
-                # Target attention layers by default
-                target_modules = ["q_proj", "v_proj"]  # Common attention module names
-            
-            lora_config = LoraConfig(
-                task_type=TaskType.CAUSAL_LM,
-                r=lora_r,
-                lora_alpha=lora_alpha,
-                lora_dropout=lora_dropout,
-                target_modules=target_modules,
-                bias="none"
-            )
-            
-            # Apply LoRA
-            self.model = get_peft_model(self.base_model, lora_config)
-            self.model = self.model.to(self.device)
-            
-            # Print trainable parameters
-            self.model.print_trainable_parameters()
-            
-            print("LoRA model initialized successfully!")
-            
+            if self.device != 'cuda':
+                self.base_model.to(self.device)
         except Exception as e:
-            print(f"Error loading Evo model: {e}")
-            print("Using mock model for demonstration")
+            print(f"Error loading model: {e}")
+            print("Running in mock mode (no model loaded)")
+            self.base_model = None
             self.model = None
-            self.tokenizer = None
-    
+            return
+
+        # Configure LoRA
+        if target_modules is None:
+            # Default target modules for Evo (StripedHyena architecture)
+            # Adjust based on specific model architecture inspection
+            target_modules = ["q_proj", "v_proj", "out_proj"] 
+            
+        peft_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            inference_mode=False,
+            r=lora_r,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            target_modules=target_modules
+        )
+        
+        # Apply LoRA
+        self.model = get_peft_model(self.base_model, peft_config)
+        self.model.print_trainable_parameters()
+        
     def generate_sequences(
         self,
         prompt: str,
@@ -100,7 +89,8 @@ class EvoLoRAAdapter:
         max_length: int = 500,
         temperature: float = 1.0,
         top_k: int = 50,
-        top_p: float = 0.95
+        top_p: float = 0.95,
+        amino_acid_constraint: Optional[str] = None
     ) -> List[str]:
         """
         Generate RNA sequences using the LoRA-adapted model.
@@ -112,6 +102,7 @@ class EvoLoRAAdapter:
             temperature: Sampling temperature (higher = more random)
             top_k: Top-k sampling parameter
             top_p: Nucleus sampling parameter
+            amino_acid_constraint: Optional amino acid sequence to constrain generation
             
         Returns:
             List of generated sequences
@@ -126,6 +117,17 @@ class EvoLoRAAdapter:
         
         # Encode prompt
         inputs = self.tokenizer(prompt, return_tensors='pt').to(self.device)
+        prompt_length = inputs['input_ids'].shape[1]
+        
+        # Setup logits processor for constraints if needed
+        logits_processor = LogitsProcessorList()
+        if amino_acid_constraint:
+            constraint_processor = StatefulCodonConstraintLogitsProcessor(
+                tokenizer=self.tokenizer,
+                target_aa_sequence=amino_acid_constraint,
+                prompt_length=prompt_length
+            )
+            logits_processor.append(constraint_processor)
         
         # Generate sequences
         with torch.no_grad():
@@ -137,15 +139,18 @@ class EvoLoRAAdapter:
                 top_k=top_k,
                 top_p=top_p,
                 do_sample=True,
-                pad_token_id=self.tokenizer.eos_token_id
+                pad_token_id=self.tokenizer.eos_token_id,
+                logits_processor=logits_processor
             )
         
         # Decode sequences
         generated_sequences = []
         for output in outputs:
-            seq = self.tokenizer.decode(output, skip_special_tokens=True)
+            # Decode only the generated part
+            generated_ids = output[prompt_length:]
+            seq = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
             # Convert T back to U for RNA
-            seq = seq.replace('T', 'U')
+            seq = seq.replace('T', 'U').replace(' ', '')
             generated_sequences.append(seq)
         
         return generated_sequences
