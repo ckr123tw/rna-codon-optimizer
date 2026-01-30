@@ -61,23 +61,32 @@ def create_toy():
             # Melt cell lines
             cell_cols = [c for c in df2.columns if c.startswith("TE_")]
             if cell_cols:
-                # Take first 2 cell lines for toy data to keep size manageable
-                target_cells = ["TE_HeLa", "TE_HepG2"]
-                target_cells = [c for c in target_cells if c in cell_cols]
+                # Take cell lines AND tissues for toy data
+                target_cols = [
+                    # Cell lines
+                    "TE_HeLa", "TE_HepG2", "TE_HEK293",
+                    # Tissues
+                    "TE_muscle_tissue", "TE_skeletal_muscle", 
+                    "TE_normal_brain_tissue", "TE_neurons",
+                    "TE_Kidney_normal_tissue"
+                ]
+                target_cols = [c for c in target_cols if c in cell_cols]
                 
-                df_melted = df2.melt(
-                    id_vars=["sequence"], 
-                    value_vars=target_cells,
-                    var_name="cell_type_col",
-                    value_name="TE"
-                )
-                df_melted["cell_line"] = df_melted["cell_type_col"].str.replace("TE_", "")
-                
-                # Atlas doesn't have HalfLife? Impute.
-                df_melted["HalfLife"] = np.random.rand(len(df_melted)) * 10
-                
-                dfs.append(df_melted[["sequence", "TE", "HalfLife", "cell_line"]])
-                print(f"Added {len(df_melted)} samples from Atlas.")
+                if target_cols:
+                    df_melted = df2.melt(
+                        id_vars=["sequence"], 
+                        value_vars=target_cols,
+                        var_name="context_col",
+                        value_name="TE"
+                    )
+                    # Extract context name (remove TE_ prefix)
+                    df_melted["cell_line"] = df_melted["context_col"].str.replace("TE_", "")
+                    
+                    # Atlas doesn't have HalfLife? Impute.
+                    df_melted["HalfLife"] = np.random.rand(len(df_melted)) * 10
+                    
+                    dfs.append(df_melted[["sequence", "TE", "HalfLife", "cell_line"]])
+                    print(f"Added {len(df_melted)} samples from Atlas (including tissues).")
                 
     if not dfs:
         print("No data found! Creating random mock.")
