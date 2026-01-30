@@ -65,6 +65,52 @@ Replace the following when you have actual data and compute:
 | **Critic** | `models/toy_critic.pt` | Will be overwritten during training |
 | **GPU** | CPU/small GPU | NVIDIA A100 40GB+ recommended for full training |
 
+## Training Modes
+
+### Mock Mode (Testing & Development)
+
+Use mock mode to verify the pipeline works without downloading large models:
+
+```bash
+./run_training.sh --data_path data/toy_dataset.csv --model_name mock
+```
+
+**What happens in mock mode:**
+- Embedder returns random 1024-dimensional vectors (no model download)
+- LoRA adapter generates random nucleotide sequences
+- Critic trains on these mock embeddings
+- Full pipeline completes in ~30 seconds on CPU
+
+**Use for:** Testing installation, verifying code changes, CI/CD pipelines
+
+### Real Model Training
+
+For actual RNA optimization, use the real Evo-1-8k foundation model:
+
+```bash
+# Activate your conda environment first
+conda activate your_env
+
+# Run with real model (downloads ~16GB model on first run)
+./run_training.sh --data_path data/toy_dataset.csv
+```
+
+**Prerequisites for real training:**
+1. Accept the [Evo-1-8k license on HuggingFace](https://huggingface.co/togethercomputer/evo-1-8k-base)
+2. Log in to HuggingFace: `huggingface-cli login`
+3. GPU with 40GB+ VRAM (A100, A6000) or use gradient checkpointing
+4. Sufficient disk space for model cache (~20GB)
+
+**Advanced options:**
+```bash
+# Custom training parameters
+./run_training.sh \
+    --data_path your_data.csv \
+    --critic_epochs 10 \
+    --ppo_epochs 5 \
+    --learning_rate 1e-5
+```
+
 ## Usage
 
 ```python
