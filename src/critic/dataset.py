@@ -22,35 +22,42 @@ class TranslationEfficiencyDataset(Dataset):
     def __init__(
         self,
         embeddings: np.ndarray,
-        te_values: np.ndarray,
+        target_values: Dict[str, np.ndarray],
         cell_line_indices: Optional[np.ndarray] = None,
-        normalize_te: bool = True
+        normalize_targets: bool = True
     ):
         """
-        Initialize dataset with precomputed embeddings.
+        Initialize dataset with precomputed embeddings and multiple targets.
         
         Args:
             embeddings: RNA sequence embeddings [N, embedding_dim]
-            te_values: Translation efficiency values [N]
+            target_values: Dict mapping metric names to values [N]
             cell_line_indices: Optional cell line integer indices [N]
-            normalize_te: Whether to normalize TE values to [0, 1]
+            normalize_targets: Whether to normalize target values to mean=0, std=1
         """
         self.embeddings = torch.tensor(embeddings, dtype=torch.float32)
-        self.te_values = torch.tensor(te_values, dtype=torch.float32)
+        
+        # Store targets as tensor dict
+        self.targets = {}
+        for k, v in target_values.items():
+            self.targets[k] = torch.tensor(v, dtype=torch.float32)
         
         if cell_line_indices is not None:
             self.cell_line_indices = torch.tensor(cell_line_indices, dtype=torch.long)
         else:
             self.cell_line_indices = None
         
-        if normalize_te:
-            # Normalize to mean=0, std=1 for better training
-            self.te_mean = self.te_values.mean()
-            self.te_std = self.te_values.std()
-            self.te_values = (self.te_values - self.te_mean) / (self.te_std + 1e-8)
+        self.target_stats = {}
+        if normalize_targets:
+            # Normalize each metric
+            for k in self.targets:
+                mean = self.targets[k].mean()
+                std = self.targets[k].std()
+                self.targets[k] = (self.targets[k] - mean) / (std + 1e-8)
+                self.target_stats[k] = {'mean': mean, 'std': std}
         else:
-            self.te_mean = 0.0
-            self.te_std = 1.0
+             for k in self.targets:
+                self.target_stats[k] = {'mean': 0.0, 'std': 1.0}
     
     def __len__(self) -> int:
         return len(self.embeddings)
@@ -65,7 +72,7 @@ class TranslationEfficiencyDataset(Dataset):
         if self.cell_line_indices is not None:
             inputs['cell_line_idx'] = self.cell_line_indices[idx]
             
-        targets = {'translation_efficiency': self.te_values[idx]}
+        targets = {k: v[idx] for k, v in self.targets.items()}
         return inputs, targets
     
     def denormalize_te(self, normalized_te: torch.Tensor) -> torch.Tensor:
@@ -77,6 +84,7 @@ def load_zheng_data(
     filepath: str,
     sequence_column: str = "sequence",
     te_column: str = "TE",
+    extra_columns: Optional[Dict[str, str]] = None,
     cell_line_column: Optional[str] = "cell_line",
     max_samples: Optional[int] = None
 ) -> Tuple[pd.DataFrame, Dict[str, int]]:
@@ -133,13 +141,22 @@ def load_zheng_data(
     
     if max_samples:
         df = df.head(max_samples)
-        
-    return df.rename(columns={sequence_column: 'sequence', te_column: 'TE'}), cell_line_map
+    
+    # rename primary columns
+    df = df.rename(columns={sequence_column: 'sequence', te_column: 'TE'})
+    
+    # Handle extra columns if any
+    # We return the dataframe (for sequence/cell info) and... wait pipeline needs values.
+    # Actually pipeline calls checking df['TE'].values. 
+    # Let's ensure extra columns are available in valid rows.
+    # The function signature returns (df, cell_map). The pipeline extracts arrays.
+    
+    return df, cell_line_map
 
 
 def create_data_loaders(
     embeddings: np.ndarray,
-    te_values: np.ndarray,
+    target_values: Dict[str, np.ndarray],
     cell_line_indices: Optional[np.ndarray] = None,
     train_split: float = 0.8,
     batch_size: int = 32,
@@ -166,25 +183,30 @@ def create_data_loaders(
     val_cells = slice_cells(cell_line_indices, val_indices)
     
     # Create datasets
+    # Create datasets
+    train_targets = {k: v[train_indices] for k, v in target_values.items()}
+    
     train_dataset = TranslationEfficiencyDataset(
         embeddings[train_indices],
-        te_values[train_indices],
+        train_targets,
         cell_line_indices=train_cells,
-        normalize_te=True
+        normalize_targets=True
     )
     
     # Use same normalization stats for validation
-    val_te = te_values[val_indices]
-    val_te_normalized = (val_te - train_dataset.te_mean.item()) / (train_dataset.te_std.item() + 1e-8)
+    val_targets = {k: v[val_indices] for k, v in target_values.items()}
+    val_targets_norm = {}
+    for k, v in val_targets.items():
+        stats = train_dataset.target_stats[k]
+        val_targets_norm[k] = (v - stats['mean'].item()) / (stats['std'].item() + 1e-8)
     
     val_dataset = TranslationEfficiencyDataset(
         embeddings[val_indices],
-        val_te_normalized,
+        val_targets_norm,
         cell_line_indices=val_cells,
-        normalize_te=False 
+        normalize_targets=False 
     )
-    val_dataset.te_mean = train_dataset.te_mean
-    val_dataset.te_std = train_dataset.te_std
+    val_dataset.target_stats = train_dataset.target_stats
     
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
@@ -209,7 +231,7 @@ if __name__ == "__main__":
     # Create data loaders
     train_loader, val_loader = create_data_loaders(
         mock_embeddings,
-        mock_te,
+        {'translation_efficiency': mock_te}, # Pass as dict
         train_split=0.8,
         batch_size=16
     )

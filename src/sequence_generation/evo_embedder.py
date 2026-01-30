@@ -45,6 +45,12 @@ class EvoEmbedder:
         print(f"Device: {self.device}")
         
         # Load tokenizer and model
+        if model_name == "mock":
+            print("Mock model requested. Using mock embedder.")
+            self.model = None
+            self.tokenizer = None
+            return
+
         try:
             self.tokenizer = AutoTokenizer.from_pretrained(
                 model_name,

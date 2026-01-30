@@ -53,6 +53,8 @@ class RNACodonOptimizationPipeline:
         print(f"  Device: {self.device}")
         print(f"  Model: {model_name}")
         
+        self.model_name = model_name
+        
         # Initialize components
         self.embedder = EvoEmbedder(model_name=model_name, device=str(self.device))
         self.critic = None
@@ -65,6 +67,10 @@ class RNACodonOptimizationPipeline:
         # Cell line support
         self.cell_line_map = {}
         self.num_cell_lines = 0
+        
+        # Multi-metric support
+        self.target_metrics = ['translation_efficiency']
+        self.targets_dict = {}
     
     def step1_prepare_data(
         self,
@@ -100,7 +106,22 @@ class RNACodonOptimizationPipeline:
                 cell_line_column=cell_line_col
             )
             self.sequences = df['sequence'].tolist()
-            self.te_values = df['TE'].values
+            
+            # Extract TE
+            self.targets_dict = {}
+            if 'TE' in df.columns:
+                self.targets_dict['translation_efficiency'] = df['TE'].values
+                self.te_values = df['TE'].values # Legacy back-compat
+            else:
+                 raise ValueError("Dataset must contain TE column")
+
+            # Extract HalfLife if present
+            if 'HalfLife' in df.columns:
+                print("Found HalfLife column. Enabling multi-metric training.")
+                self.targets_dict['half_life'] = df['HalfLife'].values
+                if 'half_life' not in self.target_metrics:
+                    self.target_metrics.append('half_life')
+            
             self.num_cell_lines = len(self.cell_line_map)
             
             # Store indices if available
@@ -120,15 +141,14 @@ class RNACodonOptimizationPipeline:
         print(f"\nDataset prepared:")
         print(f"  Samples: {len(self.sequences)}")
         print(f"  Embedding dimension: {self.embeddings.shape[1]}")
-        print(f"  TE range: [{self.te_values.min():.2f}, {self.te_values.max():.2f}]")
+        print(f"  Metrics: {self.target_metrics}")
         
-        return {
+        stats = {
             'n_samples': len(self.sequences),
             'embedding_dim': self.embeddings.shape[1],
-            'te_min': float(self.te_values.min()),
-            'te_max': float(self.te_values.max()),
-            'te_mean': float(self.te_values.mean())
+            'metrics': self.target_metrics
         }
+        return stats
     
     def step2_train_critic(
         self,
@@ -156,7 +176,7 @@ class RNACodonOptimizationPipeline:
         # Create critic model
         self.critic = MultiMetricCritic(
             input_dim=self.embeddings.shape[1],
-            metrics=['translation_efficiency'], # Expanding to multi-metric later
+            metrics=self.target_metrics,
             shared_dims=hidden_dims,
             dropout=0.3,
             num_cell_lines=self.num_cell_lines,
@@ -169,7 +189,7 @@ class RNACodonOptimizationPipeline:
         # Create data loaders
         train_loader, val_loader = create_data_loaders(
             self.embeddings,
-            self.te_values,
+            self.targets_dict,
             cell_line_indices=getattr(self, 'cell_line_indices', None),
             train_split=0.8,
             batch_size=batch_size
@@ -191,15 +211,20 @@ class RNACodonOptimizationPipeline:
             train_loss = trainer.train_epoch(train_loader, verbose=False)
             
             # Validate
-            val_loss, val_r2 = trainer.validate(val_loader)
+            val_results = trainer.validate(val_loader)
+            
+            # Aggregate metrics
+            val_loss = np.mean([v[0] for v in val_results.values()])
+            val_r2 = np.mean([v[1] for v in val_results.values()])
             
             if (epoch + 1) % 10 == 0:
+                metrics_str = ", ".join([f"{k}: R²={v[1]:.2f}" for k, v in val_results.items()])
                 print(f"Epoch {epoch + 1}/{num_epochs} - "
-                      f"Train Loss: {train_loss:.4f}, "
-                      f"Val Loss: {val_loss:.4f}, "
-                      f"Val R²: {val_r2:.4f}")
+                      f"Avg Loss: {val_loss:.4f}, "
+                      f"Avg R²: {val_r2:.4f} "
+                      f"({metrics_str})")
             
-            # Save best model
+            # Save best model (using Average R2)
             if val_r2 > best_val_r2:
                 best_val_r2 = val_r2
                 trainer.save_checkpoint('models/critic_best.pt')
@@ -229,6 +254,7 @@ class RNACodonOptimizationPipeline:
         print("=" * 60)
         
         self.lora_model = EvoLoRAAdapter(
+            model_name=self.model_name,
             lora_r=lora_r,
             lora_alpha=lora_alpha,
             device=str(self.device)
@@ -292,16 +318,27 @@ class RNACodonOptimizationPipeline:
             # If full sequence, we might need to know UTR lengths. 
             # For now, let's try to translate the whole sequence or handle errors
             try:
+                # Normalize sequence for translation
+                # 1. Convert T to U (if DNA)
+                # 2. Truncate to multiple of 3
+                # 3. Ensure uppercase
+                clean_seq = seq.upper().replace('T', 'U')
+                remainder = len(clean_seq) % 3
+                if remainder > 0:
+                    clean_seq = clean_seq[:-remainder]
+                
                 # Naive attempt: assume sequence is CDS
-                # In a real pipeline, you would have a separate column for Amino Acids or CDS
-                aa_seq = reverse_translate_cds(seq)
+                aa_seq = reverse_translate_cds(clean_seq)
                 
                 # Create prompt
                 prompts.append(f"Generate RNA with TE {te:.2f}")
                 target_tes.append(te)
                 aa_seqs.append(aa_seq)
-            except Exception:
-                # If translation fails (e.g. valid UTRs but restricted chars, or non-multiple of 3)
+            except Exception as e:
+                # If translation fails (e.g. valid UTRs + CDS mixed, or restricted chars)
+                # For debug, print first failure
+                if len(prompts) == 0:
+                   print(f"Failed to translate seq: {e}")
                 continue
                 
         if len(prompts) == 0:

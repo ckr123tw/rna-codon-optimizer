@@ -42,6 +42,16 @@ class EvoLoRAAdapter:
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
         
+        self.lora_alpha = lora_alpha
+        
+        # Mock mode check
+        if model_name == "mock":
+            print("Mock model requested. Using mock LoRA adapter.")
+            self.base_model = None
+            self.model = None
+            self.tokenizer = None
+            return
+
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         

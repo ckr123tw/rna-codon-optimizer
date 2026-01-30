@@ -32,14 +32,17 @@ cd rna-codon-optimizer
 # Install dependencies
 pip install -r requirements.txt
 
-# Download datasets (see data/README.md)
+# Create toy dataset from downloaded papers (optional)
+python create_toy_dataset.py
 
-# Run quick test
-python example_usage.py --mode quick
+# Run training with mock model (for testing)
+./run_training.sh --data_path data/toy_dataset.csv --model_name mock
 
-# Run full pipeline
-python example_usage.py --mode full
+# Run full pipeline with real model
+./run_training.sh --data_path data/toy_dataset.csv
 ```
+
+> **WSL Users:** The `run_training.sh` script automatically sets `LD_LIBRARY_PATH` to avoid GLIBCXX version errors common with Miniforge environments.
 
 ## Usage
 
@@ -101,10 +104,14 @@ rna-codon-optimizer/
 │   ├── lora_generation/      # LoRA-based generation
 │   ├── ppo_training/         # PPO optimization
 │   └── pipeline.py           # End-to-end integration
+├── scripts/                  # Training entry points
+│   └── train_ppo.py          # Main PPO training script
 ├── data/                     # Datasets
 ├── models/                   # Checkpoints
 ├── configs/                  # YAML configuration
-└── tests/                    # Unit tests
+├── tests/                    # Unit tests
+├── create_toy_dataset.py     # Utility to sample toy data from papers
+└── run_training.sh           # WSL-compatible training wrapper
 ```
 
 ## Citation

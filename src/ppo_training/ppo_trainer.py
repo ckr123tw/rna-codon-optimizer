@@ -106,7 +106,11 @@ class RNAPPOTrainer:
         
         # Predict translation efficiency
         with torch.no_grad():
-            predicted_te = self.critic_model(embedding).item()
+            critic_output = self.critic_model(embedding)
+            if isinstance(critic_output, dict):
+                predicted_te = critic_output['translation_efficiency'].item()
+            else:
+                predicted_te = critic_output.item()
         
         # Compute reward based on how close to target
         te_reward = -abs(predicted_te - target_efficiency)
