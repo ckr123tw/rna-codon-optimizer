@@ -171,14 +171,18 @@ rna-codon-optimizer/
 │   ├── lora_generation/      # LoRA-based generation
 │   ├── ppo_training/         # PPO optimization
 │   └── pipeline.py           # End-to-end integration
-├── scripts/                  # Training entry points
-│   └── train_ppo.py          # Main PPO training script
+├── scripts/                  # All utility and training scripts
+│   ├── train_ppo.py          # Main PPO training script
+│   ├── generate_toy_weights.py  # Generate toy weights for testing
+│   ├── create_toy_dataset.py    # Sample toy data from papers
+│   ├── example_usage.py         # Example usage demo
+│   ├── inspect_data.py          # Data exploration utility
+│   └── inspect_tissue_data.py   # Tissue column classifier
 ├── data/                     # Datasets
 ├── models/                   # Checkpoints
 ├── configs/                  # YAML configuration
 ├── tests/                    # Unit tests
-├── create_toy_dataset.py     # Utility to sample toy data from papers
-└── run_training.sh           # WSL-compatible training wrapper
+└── run_training.sh           # Training wrapper script
 ```
 
 ## Citation
