@@ -9,7 +9,8 @@ from pathlib import Path
 import yaml
 
 # Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from src.pipeline import RNACodonOptimizationPipeline
 

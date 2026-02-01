@@ -6,7 +6,8 @@ import sys
 from pathlib import Path
 
 # Add src to path
-sys.path.insert(0, str(Path(__file__).parent / 'src'))
+# Add src to path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / 'src'))
 
 from pipeline import RNACodonOptimizationPipeline
 from sequence_generation import create_template_sequence

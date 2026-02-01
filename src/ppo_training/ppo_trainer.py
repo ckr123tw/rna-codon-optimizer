@@ -127,7 +127,7 @@ class RNAPPOTrainer:
         
         Args:
             lora_model: LoRA-adapted Evo model
-            critic_model: Trained translation efficiency critic
+            critic_model: Trained translation efficiency critic or CriticEnsemble
             embedder: Evo embedder for generating sequence embeddings
             config: PPO training configuration
             device: Device to use
@@ -143,8 +143,10 @@ class RNAPPOTrainer:
         else:
             self.device = torch.device(device)
         
-        self.critic_model = self.critic_model.to(self.device)
-        self.critic_model.eval()  # Critic is frozen during RL
+        # Handle CriticEnsemble vs nn.Module
+        if hasattr(self.critic_model, 'to'):
+            self.critic_model = self.critic_model.to(self.device)
+            self.critic_model.eval()  # Critic is frozen during RL
         
         # Training metrics
         self.training_stats = {
@@ -218,7 +220,40 @@ class RNAPPOTrainer:
         except Exception as e:
             # Large penalty for invalid sequences
             return -100.0
+            
+        # Optimization: Use CriticEnsemble's native compute_reward if available
+        # This avoids duplicating logic and allows ensemble-specific optimizations
+        if hasattr(self.critic_model, 'compute_reward'):
+            # Update weights in ensemble configuration if needed
+            if hasattr(self.critic_model, 'metric_weights'):
+                self.critic_model.metric_weights = self.config.metric_weights
+                
+            model_reward = self.critic_model.compute_reward(
+                embeddings=embedding,
+                target_metrics=target_metrics,
+                aggregation=self.config.reward_aggregation,
+                normalize=self.config.normalize_rewards
+            )
+            
+            # Add validation bonus (still calculated here to decouple validation logic)
+            validation_bonus = 0.0
+            if utr5 is not None and utr3 is not None:
+                from ..sequence_generation.validation import validate_full_rna_sequence
+                validation = validate_full_rna_sequence(
+                    generated_sequence,
+                    utr5,
+                    utr3,
+                    amino_acid_sequence,
+                    allow_stop=True
+                )
+                if validation['is_valid']:
+                    validation_bonus = 2.0
+                else:
+                    validation_bonus = -15.0
+            
+            return model_reward + validation_bonus
         
+        # Fallback: Standard logic for MultiMetricCritic or other models
         # Get predictions for all metrics
         with torch.no_grad():
             critic_output = self.critic_model(embedding, return_dict=True)

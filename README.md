@@ -36,17 +36,17 @@ cd rna-codon-optimizer
 # Install dependencies
 pip install -r requirements.txt
 
-# Generate toy weights and data for testing
-python scripts/generate_toy_weights.py
+# Generate toy data for testing
+python scripts/data/create_toy_dataset.py
 
 # Run training with toy data (mock model - no large downloads)
-./run_training.sh --data_path data/toy_dataset.csv --model_name mock
+./run_pipeline.sh --data_path data/toy_dataset.csv --model_name mock
 
-# Run full pipeline with real Evo-1-8k model (requires ~16GB GPU)
-./run_training.sh --data_path data/toy_dataset.csv
+# Run real training (downloads Evo-1-8k)
+./run_pipeline.sh --data_path data/toy_dataset.csv
 ```
 
-> **WSL Users:** The `run_training.sh` script automatically sets `LD_LIBRARY_PATH` to avoid GLIBCXX version errors common with Miniforge environments.
+> **WSL Users:** The `run_pipeline.sh` script automatically handles `LD_LIBRARY_PATH` configuration.
 
 ## Test Setup (Toy Data & Weights)
 
@@ -54,9 +54,7 @@ The repository includes scripts to generate toy artifacts for testing:
 
 | Artifact | Location | Purpose |
 |----------|----------|---------|
-| Toy Dataset | `data/toy_dataset.csv` | 1800 samples with TE, Half-Life, cell lines & tissues |
-| Toy Critic | `models/toy_critic.pt` | Pre-initialized critic model (~738K params) |
-| Embedder Config | `models/toy_embedder_config.json` | Mock embedder configuration |
+| Toy Dataset | `data/toy_dataset.csv` | Sample sequences with TE, Half-Life, cell lines & tissues |
 
 ### For Real Training
 
@@ -175,18 +173,17 @@ rna-codon-optimizer/
 │   ├── lora_generation/      # LoRA-based generation
 │   ├── ppo_training/         # PPO optimization
 │   └── pipeline.py           # End-to-end integration
-├── scripts/                  # All utility and training scripts
-│   ├── train_ppo.py          # Main PPO training script
-│   ├── generate_toy_weights.py  # Generate toy weights for testing
-│   ├── create_toy_dataset.py    # Sample toy data from papers
-│   ├── example_usage.py         # Example usage demo
-│   ├── inspect_data.py          # Data exploration utility
-│   └── inspect_tissue_data.py   # Tissue column classifier
+├── scripts/
+│   ├── data/                 # Data prep (create_toy_dataset.py, etc.)
+│   ├── training/             # Training scripts (run_pipeline.py)
+│   ├── generation/           # Sequence generation (generate_sequences.py)
+│   └── examples/             # Usage demos (full_pipeline_demo.py)
 ├── data/                     # Datasets
 ├── models/                   # Checkpoints
 ├── configs/                  # YAML configuration
 ├── tests/                    # Unit tests
-└── run_training.sh           # Training wrapper script
+├── run_pipeline.sh           # Main training wrapper
+└── generate_sequences.sh     # Generation wrapper
 ```
 
 ## Citation

@@ -12,7 +12,16 @@ import json
 # Import pipeline components
 from src.sequence_generation import RNASequenceGenerator
 from src.sequence_generation.evo_embedder import EvoEmbedder
-from src.critic import MultiMetricCritic, MultiMetricTrainer, load_zheng_data, create_data_loaders
+from src.critic import (
+    MultiMetricCritic, 
+    MultiMetricTrainer,
+    SingleMetricCritic,
+    SingleMetricTrainer,
+    CriticEnsemble,
+    create_single_metric_loaders,
+    load_zheng_data, 
+    create_data_loaders
+)
 from src.lora_generation.lora_adapter import EvoLoRAAdapter, format_conditional_prompt
 from src.ppo_training.ppo_trainer import RNAPPOTrainer, PPOTrainingConfig
 
@@ -152,55 +161,69 @@ class RNACodonOptimizationPipeline:
     
     def step2_train_critic(
         self,
+        mode: str = 'multi_metric',  # 'multi_metric' or 'ensemble'
+        # Common params
         hidden_dims: List[int] = [512, 256],
         num_epochs: int = 50,
         batch_size: int = 32,
         learning_rate: float = 1e-3,
         early_stopping_patience: int = 10,
+        # Multi-metric params
         train_ratio: float = 0.70,
         dev_ratio: float = 0.15,
         test_ratio: float = 0.15,
-        use_3way_split: bool = True
+        use_3way_split: bool = True,
+        # Ensemble params
+        critic_configs: Optional[List[Dict]] = None
     ) -> Dict:
         """
-        Step 2: Train critic model to predict translation efficiency.
+        Step 2: Train critic model(s) to predict RNA metrics.
+        
+        Modes:
+        - 'multi_metric': Train one model on the currently loaded unified dataset (requires all metrics per sequence)
+        - 'ensemble': Train separate critics on diverse datasets (specified in critic_configs)
         
         Args:
-            hidden_dims: Hidden layer dimensions for MLP (default: [512, 256])
-                - Larger networks [512, 256, 128] for complex patterns
-                - Smaller [256, 128] for limited data
-            num_epochs: Maximum number of training epochs (default: 50)
-                - 30-100 epochs typically sufficient
-                - Early stopping will halt if no improvement
-            batch_size: Samples per training batch (default: 32)
-                - Larger (64-128) for faster training
-                - Smaller (16) for more stochastic updates
-            learning_rate: Optimizer learning rate (default: 1e-3)
-                - 1e-3 works well for critic training
-                - Try 1e-4 if training is unstable
-            early_stopping_patience: Epochs without improvement before stopping (default: 10)
-                - Higher (15-20) for noisy data
-                - Lower (5-7) for quick experiments
-            train_ratio: Fraction of data for training (default: 0.70)
-            dev_ratio: Fraction for development/validation (default: 0.15)
-            test_ratio: Fraction for final testing (default: 0.15)
-            use_3way_split: Whether to use train/dev/test splits (default: True)
-                - False uses legacy 80/20 train/val split
-            
+            mode: Training mode ('multi_metric' or 'ensemble')
+            hidden_dims: Hidden layer dimensions
+            num_epochs: Training epochs
+            batch_size: Training batch size
+            learning_rate: Learning rate
+            early_stopping_patience: Early stopping patience
+            train_ratio: Training split ratio (multi_metric)
+            dev_ratio: Development split ratio (multi_metric)
+            test_ratio: Test split ratio (multi_metric)
+            use_3way_split: Whether to use 3-way split (multi_metric)
+            critic_configs: List of configs for ensemble mode. Each dict should contain:
+                - metric_name: Name of metric
+                - data_path: Path to dataset
+                - sequence_column: Name of sequence column
+                - target_column: Name of target column
+                - weight: Weight for this critic (default: 1.0)
+                
         Returns:
-            Training statistics including best epoch, R² scores, and test results
-            
-        Monitoring Training:
-            Watch the console output for:
-            - Train/Val Loss: Should decrease (lower is better)
-            - R² Score: Should increase toward 1.0 (higher is better)
-            - ★ symbol: Indicates best epoch so far
-            - Early stopping warning: Triggers when validation plateaus
+            Dict of results
         """
         print("\n" + "=" * 60)
-        print("STEP 2: Training Translation Efficiency Critic")
+        print(f"STEP 2: Training Critic ({mode} mode)")
         print("=" * 60)
         
+        if mode == 'ensemble':
+            if not critic_configs:
+                raise ValueError("critic_configs must be provided for ensemble mode")
+            
+            ensemble = self.create_critic_ensemble(
+                critic_configs,
+                hidden_dims=hidden_dims,
+                num_epochs=num_epochs,
+                batch_size=batch_size,
+                learning_rate=learning_rate,
+                early_stopping_patience=early_stopping_patience
+            )
+            self.critic = ensemble
+            return {'mode': 'ensemble', 'metrics': ensemble.get_metrics()}
+        
+        # Default: multi-metric mode
         # Create critic model
         self.critic = MultiMetricCritic(
             input_dim=self.embeddings.shape[1],
@@ -266,6 +289,107 @@ class RNACodonOptimizationPipeline:
         )
         
         return results
+
+    def train_single_critic(
+        self,
+        metric_name: str,
+        data_path: str,
+        sequence_column: str,
+        target_column: str,
+        hidden_dims: List[int] = [512, 256],
+        num_epochs: int = 50,
+        batch_size: int = 32,
+        learning_rate: float = 1e-3,
+        early_stopping_patience: int = 10
+    ) -> SingleMetricCritic:
+        """
+        Train a single-metric critic on a specific dataset.
+        """
+        import pandas as pd
+        
+        print(f"\nTraining critic for '{metric_name}'...")
+        
+        # Load data
+        if data_path.endswith('.csv'):
+            df = pd.read_csv(data_path)
+        elif data_path.endswith(('.xls', '.xlsx')):
+            df = pd.read_excel(data_path)
+        else:
+            raise ValueError(f"Unsupported file format: {data_path}")
+            
+        print(f"Loaded {len(df)} samples from {data_path}")
+        
+        # Filter NaNs
+        df = df.dropna(subset=[sequence_column, target_column])
+        sequences = df[sequence_column].tolist()
+        targets = df[target_column].values.astype(float)
+        
+        # Embed sequences
+        print("Embedding sequences...")
+        embeddings = self.embedder.embed_batch(
+            sequences,
+            batch_size=32,
+            show_progress=True
+        )
+        
+        # Create loaders
+        train_loader, val_loader, norm_params = create_single_metric_loaders(
+            embeddings, targets, batch_size=batch_size
+        )
+        
+        # Create and train model
+        critic = SingleMetricCritic(
+            input_dim=embeddings.shape[1],
+            hidden_dims=hidden_dims,
+            metric_name=metric_name
+        )
+        
+        critic.set_normalization(norm_params['mean'], norm_params['std'])
+        
+        trainer = SingleMetricTrainer(
+            critic, 
+            learning_rate=learning_rate,
+            device=str(self.device)
+        )
+        
+        trainer.train(
+            train_loader,
+            val_loader,
+            num_epochs=num_epochs,
+            early_stopping_patience=early_stopping_patience,
+            checkpoint_path=f'models/{metric_name}_critic.pt'
+        )
+        
+        return critic
+
+    def create_critic_ensemble(
+        self,
+        critic_configs: List[Dict],
+        **training_kwargs
+    ) -> CriticEnsemble:
+        """Create and train a critic ensemble."""
+        ensemble = CriticEnsemble(device=str(self.device))
+        
+        for config in critic_configs:
+            metric_name = config['metric_name']
+            weight = config.get('weight', 1.0)
+            
+            # Extract training specific args
+            train_kwargs = {k: v for k, v in training_kwargs.items() 
+                          if k in ['hidden_dims', 'num_epochs', 'batch_size', 
+                                 'learning_rate', 'early_stopping_patience']}
+            
+            critic = self.train_single_critic(
+                metric_name=metric_name,
+                data_path=config['data_path'],
+                sequence_column=config['sequence_column'],
+                target_column=config['target_column'],
+                **train_kwargs
+            )
+            
+            ensemble.add_critic(metric_name, critic, weight=weight)
+            
+        return ensemble
     
     def step3_initialize_lora(
         self,
@@ -510,6 +634,62 @@ class RNACodonOptimizationPipeline:
             'predicted_te': all_predictions[best_idx].get('translation_efficiency'),
             'target_te': target_metrics.get('translation_efficiency')
         }
+
+
+    def load_models(
+        self,
+        lora_path: str,
+        critic_path: str,
+        critic_class=None
+    ):
+        """
+        Load trained models for inference.
+        
+        Args:
+            lora_path: Path to LoRA adapter
+            critic_path: Path to critic model
+            critic_class: Optional critic class (default: MultiMetricCritic or CriticEnsemble)
+        """
+        lora_path = Path(lora_path)
+        critic_path = Path(critic_path)
+        
+        # Load LoRA
+        if lora_path.exists():
+            print(f"Loading LoRA adapter from {lora_path}...")
+            if self.lora_model is None:
+                 self.lora_model = EvoLoRAAdapter(
+                    model_name=self.model_name,
+                    device=str(self.device)
+                )
+            self.lora_model.load_adapter(str(lora_path))
+            self.trained = True
+        else:
+            print(f"Warning: LoRA adapter not found at {lora_path}")
+            
+        # Load Critic
+        if critic_path.exists():
+            print(f"Loading critic from {critic_path}...")
+            if critic_path.is_dir():
+                # Ensemble
+                ensemble = CriticEnsemble(device=str(self.device))
+                ensemble.load(str(critic_path), critic_class=SingleMetricCritic)
+                self.critic = ensemble
+            else:
+                # Single model
+                checkpoint = torch.load(critic_path, map_location=self.device)
+                metrics = checkpoint.get('metrics', ['translation_efficiency'])
+                
+                self.critic = MultiMetricCritic(
+                    input_dim=checkpoint.get('input_dim', 1024),
+                    metrics=metrics,
+                    shared_dims=checkpoint.get('shared_dims', [512, 256]),
+                    num_cell_lines=checkpoint.get('num_cell_lines', 0)
+                )
+                self.critic.load_state_dict(checkpoint['model_state_dict'])
+                self.critic.to(self.device)
+                self.critic.eval()
+        else:
+            print(f"Warning: Critic model not found at {critic_path}")
 
 
 if __name__ == "__main__":
