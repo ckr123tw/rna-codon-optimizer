@@ -393,33 +393,57 @@ class RNACodonOptimizationPipeline:
         utr5: str,
         utr3: str,
         amino_acid_sequence: str,
-        target_efficiency: float,
+        target_metrics: Optional[Dict[str, float]] = None,
         cell_line: Optional[str] = None,
-        num_candidates: int = 10
+        num_candidates: int = 10,
+        metric_weights: Optional[Dict[str, float]] = None,
+        # Backward compatibility
+        target_efficiency: Optional[float] = None
     ) -> Dict:
         """
-        Generate optimized RNA sequence for given constraints.
+        Generate optimized RNA sequence for given constraints with multi-metric targets.
         
         Args:
             utr5: 5' UTR sequence
             utr3: 3' UTR sequence
             amino_acid_sequence: Amino acid sequence to encode
-            target_efficiency: Target translation efficiency
+            target_metrics: Dictionary of target metric values
+                Example: {'translation_efficiency': 0.85, 'half_life': 12.0}
             cell_line: Target cell line name (e.g. 'HEK293')
             num_candidates: Number of candidate sequences to generate
+            metric_weights: Weights for ranking candidates (default: equal weights)
+                Example: {'translation_efficiency': 0.7, 'half_life': 0.3}
+            target_efficiency: DEPRECATED - Use target_metrics instead
             
         Returns:
-            Dictionary with best sequence and predictions
+            Dictionary with:
+                - best_sequence: Best candidate based on weighted scoring
+                - predictions: Dict of predicted metric values for best sequence
+                - target_metrics: The target values used
+                - all_candidates: List of all generated sequences
+                - all_predictions: List of prediction dicts for all candidates
+                - ranking_scores: Scores used for ranking (lower is better)
         """
         if not self.trained:
             print("Warning: Pipeline not fully trained. Results may be suboptimal.")
         
-        # Format prompt
+        # Handle backward compatibility
+        if target_metrics is None:
+            if target_efficiency is not None:
+                target_metrics = {'translation_efficiency': target_efficiency}
+            else:
+                target_metrics = {'translation_efficiency': 0.5}
+        
+        # Default metric weights (equal for all targets)
+        if metric_weights is None:
+            metric_weights = {k: 1.0 for k in target_metrics.keys()}
+        
+        # Format prompt with all target metrics
         prompt = format_conditional_prompt(
             utr5=utr5,
             utr3=utr3,
             amino_acid_sequence=amino_acid_sequence,
-            target_efficiency=target_efficiency,
+            target_metrics=target_metrics,
             cell_line=cell_line
         )
         
@@ -439,30 +463,52 @@ class RNACodonOptimizationPipeline:
             else:
                 print(f"Warning: Cell line '{cell_line}' not in training data. Using generic prediction.")
 
-        # Score candidates with critic
-        scores = []
+        # Score candidates with critic for all metrics
+        all_predictions = []
+        ranking_scores = []
+        
         for seq in candidates:
             embedding = self.embedder.embed_sequence(seq, return_numpy=False)
             embedding = embedding.unsqueeze(0).to(self.device)
             
-            # Predict
+            # Predict all metrics
             pred_dict = self.critic.predict(
                 embedding, 
                 cell_line_indices=cell_idx_tensor
             )
-            # Default to TE metric
-            pred_te = pred_dict['translation_efficiency'].item()
-            scores.append(pred_te)
+            
+            # Convert tensors to floats
+            predictions = {}
+            for metric_name, value in pred_dict.items():
+                if hasattr(value, 'item'):
+                    predictions[metric_name] = value.item()
+                else:
+                    predictions[metric_name] = float(value)
+            
+            all_predictions.append(predictions)
+            
+            # Compute ranking score (weighted distance from targets)
+            score = 0.0
+            for metric_name, target_value in target_metrics.items():
+                if metric_name in predictions:
+                    weight = metric_weights.get(metric_name, 1.0)
+                    predicted = predictions[metric_name]
+                    score += weight * abs(predicted - target_value)
+            ranking_scores.append(score)
         
-        # Find best sequence
-        best_idx = np.argmin([abs(score - target_efficiency) for score in scores])
+        # Find best sequence (lowest ranking score = closest to targets)
+        best_idx = np.argmin(ranking_scores)
         
         return {
             'best_sequence': candidates[best_idx],
-            'predicted_te': scores[best_idx],
-            'target_te': target_efficiency,
+            'predictions': all_predictions[best_idx],
+            'target_metrics': target_metrics,
             'all_candidates': candidates,
-            'all_scores': scores
+            'all_predictions': all_predictions,
+            'ranking_scores': ranking_scores,
+            # Backward compatibility
+            'predicted_te': all_predictions[best_idx].get('translation_efficiency'),
+            'target_te': target_metrics.get('translation_efficiency')
         }
 
 

@@ -9,13 +9,13 @@ from transformers import AutoTokenizer
 from trl import PPOConfig, PPOTrainer, AutoModelForCausalLMWithValueHead
 from typing import List, Dict, Optional
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
 class PPOTrainingConfig:
     """
-    Configuration for PPO training.
+    Configuration for PPO training with multi-metric reward support.
     
     Hyperparameters (Tuning Guide):
         learning_rate: Policy learning rate (default: 1e-5)
@@ -43,15 +43,41 @@ class PPOTrainingConfig:
             
         init_kl_coef: Initial KL penalty coefficient (default: 0.2)
             - Balances reward vs staying close to original policy
+    
+    Multi-Metric Reward Configuration:
+        metric_weights: Dictionary of metric -> weight for reward computation
+            Example: {'translation_efficiency': 0.7, 'half_life': 0.3}
+            - Weights should sum to 1.0 for normalized rewards
+            - Set weight to 0.0 to ignore a metric
+            - Default: Only translation_efficiency with weight 1.0
             
-    Example:
+        reward_aggregation: How to combine multi-metric rewards
+            - 'weighted_sum': Sum of (weight * metric_reward) - default
+            - 'pareto': Pareto-based, uses minimum normalized reward
+            - 'product': Product of normalized rewards (all must be positive)
+            - 'tchebyshev': Minimizes max weighted deviation from ideal
+            
+        normalize_rewards: Whether to normalize individual metric rewards
+            to [0, 1] range before aggregation (default: True)
+            Recommended when using 'pareto' or 'product' aggregation.
+            
+    Examples:
+        # Single metric (default behavior)
+        >>> config = PPOTrainingConfig()
+        
+        # Weighted multi-objective
         >>> config = PPOTrainingConfig(
-        ...     learning_rate=5e-6,
-        ...     batch_size=8,
-        ...     ppo_epochs=4,
-        ...     target_kl=0.1
+        ...     metric_weights={'translation_efficiency': 0.7, 'half_life': 0.3},
+        ...     reward_aggregation='weighted_sum'
+        ... )
+        
+        # Pareto-based (balance all objectives equally)
+        >>> config = PPOTrainingConfig(
+        ...     metric_weights={'translation_efficiency': 1.0, 'half_life': 1.0},
+        ...     reward_aggregation='pareto'
         ... )
     """
+    # PPO hyperparameters
     learning_rate: float = 1e-5
     batch_size: int = 4
     mini_batch_size: int = 1
@@ -65,6 +91,22 @@ class PPOTrainingConfig:
     adap_kl_ctrl: bool = True
     init_kl_coef: float = 0.2
     target_kl: float = 6.0
+    
+    # Multi-metric reward configuration
+    metric_weights: Dict[str, float] = field(default_factory=lambda: {
+        'translation_efficiency': 1.0
+    })
+    reward_aggregation: str = 'weighted_sum'  # 'weighted_sum', 'pareto', 'product', 'tchebyshev'
+    normalize_rewards: bool = True
+    
+    def __post_init__(self):
+        """Validate configuration."""
+        valid_aggregations = {'weighted_sum', 'pareto', 'product', 'tchebyshev'}
+        if self.reward_aggregation not in valid_aggregations:
+            raise ValueError(
+                f"Invalid reward_aggregation '{self.reward_aggregation}'. "
+                f"Must be one of: {valid_aggregations}"
+            )
 
 
 class RNAPPOTrainer:
@@ -115,24 +157,60 @@ class RNAPPOTrainer:
     def compute_reward(
         self,
         generated_sequence: str,
-        target_efficiency: float,
+        target_metrics: Dict[str, float],
         amino_acid_sequence: str,
         utr5: Optional[str] = None,
-        utr3: Optional[str] = None
+        utr3: Optional[str] = None,
+        # Backward compatibility
+        target_efficiency: Optional[float] = None
     ) -> float:
         """
-        Compute reward for a generated RNA sequence.
+        Compute multi-metric reward for a generated RNA sequence.
+        
+        Supports multiple reward aggregation strategies:
+        - weighted_sum: Linear combination of metric rewards
+        - pareto: Minimum normalized reward (encourages balanced improvement)
+        - product: Product of rewards (requires all metrics to improve)
+        - tchebyshev: Minimizes worst-case deviation from targets
         
         Args:
             generated_sequence: Generated RNA sequence
-            target_efficiency: Target translation efficiency
+            target_metrics: Dictionary of target metric values
+                Example: {'translation_efficiency': 0.8, 'half_life': 12.0}
             amino_acid_sequence: Expected amino acid sequence
             utr5: Expected 5'UTR (for validation)
             utr3: Expected 3'UTR (for validation)
+            target_efficiency: DEPRECATED - Use target_metrics instead
             
         Returns:
             Reward value (higher is better)
+            
+        Aggregation Strategies:
+            weighted_sum (default):
+                reward = sum(weight_i * metric_reward_i)
+                Best for: Clear priority ordering of metrics
+                
+            pareto:
+                reward = min(normalized_reward_i for all metrics)
+                Best for: Balanced multi-objective optimization
+                Ensures no single metric is neglected
+                
+            product:
+                reward = product(normalized_reward_i for all metrics)
+                Best for: When all metrics must improve together
+                Warning: Sensitive to any metric being near zero
+                
+            tchebyshev:
+                reward = -max(weight_i * |predicted_i - target_i|)
+                Best for: Minimax approach, bounds worst-case deviation
         """
+        # Backward compatibility
+        if target_metrics is None or len(target_metrics) == 0:
+            if target_efficiency is not None:
+                target_metrics = {'translation_efficiency': target_efficiency}
+            else:
+                target_metrics = {'translation_efficiency': 0.5}
+        
         # Get sequence embedding
         try:
             embedding = self.embedder.embed_sequence(generated_sequence, return_numpy=False)
@@ -141,16 +219,77 @@ class RNAPPOTrainer:
             # Large penalty for invalid sequences
             return -100.0
         
-        # Predict translation efficiency
+        # Get predictions for all metrics
         with torch.no_grad():
-            critic_output = self.critic_model(embedding)
-            if isinstance(critic_output, dict):
-                predicted_te = critic_output['translation_efficiency'].item()
-            else:
-                predicted_te = critic_output.item()
+            critic_output = self.critic_model(embedding, return_dict=True)
+            if not isinstance(critic_output, dict):
+                # Single output model - assume translation_efficiency
+                critic_output = {'translation_efficiency': critic_output}
         
-        # Compute reward based on how close to target
-        te_reward = -abs(predicted_te - target_efficiency)
+        # Compute individual metric rewards
+        metric_rewards = {}
+        for metric_name, weight in self.config.metric_weights.items():
+            if weight <= 0:
+                continue
+                
+            if metric_name not in critic_output:
+                continue
+                
+            predicted = critic_output[metric_name]
+            if isinstance(predicted, torch.Tensor):
+                predicted = predicted.item()
+            
+            target = target_metrics.get(metric_name, 0.0)
+            
+            # Raw reward: negative absolute error (closer = better)
+            raw_reward = -abs(predicted - target)
+            metric_rewards[metric_name] = {
+                'predicted': predicted,
+                'target': target,
+                'raw_reward': raw_reward,
+                'weight': weight
+            }
+        
+        # Normalize rewards if configured
+        if self.config.normalize_rewards and metric_rewards:
+            # Normalize to [0, 1] range based on typical error bounds
+            for metric_name, data in metric_rewards.items():
+                # Use sigmoid-like normalization: 1 / (1 + |error|)
+                raw = data['raw_reward']
+                normalized = 1.0 / (1.0 + abs(raw))
+                data['normalized_reward'] = normalized
+        else:
+            for data in metric_rewards.values():
+                data['normalized_reward'] = data['raw_reward']
+        
+        # Aggregate rewards based on strategy
+        aggregation = self.config.reward_aggregation
+        
+        if not metric_rewards:
+            total_reward = -10.0  # No valid metrics to evaluate
+        elif aggregation == 'weighted_sum':
+            total_reward = sum(
+                data['weight'] * data['raw_reward']
+                for data in metric_rewards.values()
+            )
+        elif aggregation == 'pareto':
+            # Pareto: use minimum normalized reward
+            # This encourages balanced improvement across all metrics
+            normalized_rewards = [data['normalized_reward'] for data in metric_rewards.values()]
+            total_reward = min(normalized_rewards)
+        elif aggregation == 'product':
+            # Product of normalized rewards (all must be positive)
+            normalized_rewards = [data['normalized_reward'] for data in metric_rewards.values()]
+            total_reward = np.prod(normalized_rewards)
+        elif aggregation == 'tchebyshev':
+            # Tchebyshev: minimize max weighted deviation
+            weighted_deviations = [
+                data['weight'] * abs(data['predicted'] - data['target'])
+                for data in metric_rewards.values()
+            ]
+            total_reward = -max(weighted_deviations)
+        else:
+            total_reward = sum(data['raw_reward'] for data in metric_rewards.values())
         
         # Validate amino acid sequence preservation
         validation_bonus = 0.0
@@ -170,7 +309,7 @@ class RNAPPOTrainer:
             else:
                 validation_bonus = -15.0  # Large penalty for invalid
         
-        total_reward = te_reward + validation_bonus
+        total_reward = total_reward + validation_bonus
         
         return total_reward
     

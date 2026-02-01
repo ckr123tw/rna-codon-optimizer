@@ -7,9 +7,10 @@ This guide explains how to configure hyperparameters for the RNA codon optimizer
 1. [Training Overview](#training-overview)
 2. [Critic Training Configuration](#critic-training-configuration)
 3. [PPO Training Configuration](#ppo-training-configuration)
-4. [Data Splitting](#data-splitting)
-5. [Monitoring Training Progress](#monitoring-training-progress)
-6. [Troubleshooting](#troubleshooting)
+4. [Multi-Objective Optimization](#multi-objective-optimization)
+5. [Data Splitting](#data-splitting)
+6. [Monitoring Training Progress](#monitoring-training-progress)
+7. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -143,6 +144,189 @@ results = ppo_trainer.train(
     steps_per_epoch=50,
     early_stopping_patience=5,
     verbose=True
+)
+```
+
+---
+
+## Multi-Objective Optimization
+
+The RNA codon optimizer supports optimizing for multiple metrics simultaneously (e.g., translation efficiency + mRNA half-life). This section explains how to configure multi-metric targets and reward aggregation strategies.
+
+### Supported Metrics
+
+| Metric | Description | Typical Range |
+|--------|-------------|---------------|
+| `translation_efficiency` | Protein expression efficiency | 0.0 - 1.0 |
+| `half_life` | mRNA stability in hours | 1.0 - 48.0+ |
+| `stability` | Sequence stability score | 0.0 - 1.0 |
+| Custom metrics | As defined in your critic | Varies |
+
+### Multi-Metric Prompt Formatting
+
+```python
+from src.lora_generation.lora_adapter import format_conditional_prompt
+
+# Single metric (default/legacy)
+prompt = format_conditional_prompt(
+    utr5="AUGCAUGC...",
+    utr3="GCUAGCUA...",
+    amino_acid_sequence="MVKL...",
+    target_efficiency=0.85  # Deprecated but still works
+)
+
+# Multi-metric (recommended)
+prompt = format_conditional_prompt(
+    utr5="AUGCAUGC...",
+    utr3="GCUAGCUA...",
+    amino_acid_sequence="MVKL...",
+    target_metrics={
+        'translation_efficiency': 0.85,
+        'half_life': 12.0
+    },
+    cell_line="HEK293"
+)
+```
+
+### Reward Aggregation Strategies
+
+Configure how multiple metric rewards are combined during PPO training:
+
+| Strategy | Formula | Best For |
+|----------|---------|----------|
+| `weighted_sum` | `Σ(weight × reward)` | Clear priority ordering |
+| `pareto` | `min(normalized_rewards)` | Balanced improvement |
+| `product` | `Π(normalized_rewards)` | All metrics must improve |
+| `tchebyshev` | `-max(weight × error)` | Bounding worst-case |
+
+### Static Weights Configuration
+
+Use when you have clear priorities between metrics:
+
+```python
+from src.ppo_training.ppo_trainer import PPOTrainingConfig
+
+# Prioritize translation efficiency (70%) over half-life (30%)
+config = PPOTrainingConfig(
+    learning_rate=1e-5,
+    batch_size=8,
+    metric_weights={
+        'translation_efficiency': 0.7,
+        'half_life': 0.3
+    },
+    reward_aggregation='weighted_sum',
+    normalize_rewards=True
+)
+```
+
+**Setting Weights:**
+- Weights should typically sum to 1.0 (for interpretable rewards)
+- Higher weight = higher priority for that metric
+- Set weight to 0.0 to ignore a metric entirely
+- Start with equal weights, then adjust based on results
+
+### Pareto-Based Optimization
+
+Use when you want balanced improvement across all metrics without explicit priorities:
+
+```python
+# Pareto: improves the worst-performing metric
+config = PPOTrainingConfig(
+    metric_weights={
+        'translation_efficiency': 1.0,  # Equal importance
+        'half_life': 1.0
+    },
+    reward_aggregation='pareto',
+    normalize_rewards=True  # Required for pareto
+)
+```
+
+**How Pareto Works:**
+1. Normalizes each metric's reward to [0, 1] range
+2. Returns the **minimum** normalized reward
+3. This encourages the policy to improve the weakest metric
+4. Results in Pareto-optimal solutions (no metric can improve without hurting another)
+
+**When to Use Pareto:**
+- No clear priority between metrics
+- Want to avoid sacrificing one metric for another
+- Exploring the Pareto frontier of trade-offs
+
+### Tchebyshev Scalarization
+
+Use when you want to bound the worst-case deviation from targets:
+
+```python
+config = PPOTrainingConfig(
+    metric_weights={
+        'translation_efficiency': 1.0,
+        'half_life': 0.5  # Half-life errors weighted less
+    },
+    reward_aggregation='tchebyshev'
+)
+```
+
+**How Tchebyshev Works:**
+- Minimizes: `max(weight_i × |predicted_i - target_i|)`
+- Guarantees no single metric deviates too far from target
+- Useful for satisficing (meeting constraints) rather than maximizing
+
+### Multi-Metric Generation
+
+When generating optimized sequences, specify targets for all metrics:
+
+```python
+result = pipeline.generate_optimized_sequence(
+    utr5="AUGC...",
+    utr3="GCUA...",
+    amino_acid_sequence="MVKL...",
+    target_metrics={
+        'translation_efficiency': 0.90,
+        'half_life': 15.0
+    },
+    metric_weights={
+        'translation_efficiency': 0.6,
+        'half_life': 0.4
+    },
+    num_candidates=20
+)
+
+# Results include all predicted metrics
+print(f"Best sequence achieves:")
+for metric, value in result['predictions'].items():
+    target = result['target_metrics'].get(metric, 'N/A')
+    print(f"  {metric}: {value:.3f} (target: {target})")
+```
+
+### Choosing the Right Strategy
+
+| Scenario | Recommended Strategy |
+|----------|---------------------|
+| One metric clearly most important | `weighted_sum` with high weight |
+| All metrics equally important | `pareto` |
+| Must meet minimum thresholds | `tchebyshev` |
+| Exploratory/research | Try all, compare results |
+
+### Example: Production Configuration
+
+```python
+# Balanced optimization for translation efficiency and stability
+config = PPOTrainingConfig(
+    learning_rate=5e-6,
+    batch_size=8,
+    ppo_epochs=4,
+    
+    # Multi-objective settings
+    metric_weights={
+        'translation_efficiency': 0.6,
+        'half_life': 0.4
+    },
+    reward_aggregation='weighted_sum',
+    normalize_rewards=True,
+    
+    # Stability settings
+    cliprange=0.2,
+    target_kl=0.1
 )
 ```
 

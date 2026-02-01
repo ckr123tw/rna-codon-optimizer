@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from transformers import AutoTokenizer, AutoModelForCausalLM, LogitsProcessorList
 from peft import LoraConfig, get_peft_model, TaskType
-from typing import Optional, List
+from typing import Optional, List, Dict
 import random
 
 from ..sequence_generation.constrained_decoding import StatefulCodonConstraintLogitsProcessor
@@ -190,17 +190,19 @@ def format_conditional_prompt(
     utr5: str,
     utr3: str,
     amino_acid_sequence: str,
-    target_efficiency: float,
+    target_metrics: Optional[Dict[str, float]] = None,
     cell_line: Optional[str] = None,
-    include_instructions: bool = True
+    include_instructions: bool = True,
+    # Backward compatibility
+    target_efficiency: Optional[float] = None
 ) -> str:
     """
-    Format a conditioning prompt for the LoRA model.
+    Format a conditioning prompt for the LoRA model with multi-metric targets.
     
     The prompt includes:
         - Cell Line (optional)
         - 5'UTR (fixed)
-        - Target translation efficiency
+        - Target metrics (translation efficiency, half-life, etc.)
         - Amino acid sequence constraint
         - 3'UTR (fixed)
     
@@ -208,17 +210,68 @@ def format_conditional_prompt(
         utr5: 5' UTR sequence
         utr3: 3' UTR sequence
         amino_acid_sequence: Amino acid sequence to encode
-        target_efficiency: Desired translation efficiency
+        target_metrics: Dictionary of target metric values
+            Example: {'translation_efficiency': 0.85, 'half_life': 12.0}
+            Supported metrics:
+                - 'translation_efficiency': Target TE value (0.0-1.0 typically)
+                - 'half_life': Target mRNA half-life in hours
+                - 'stability': Target stability score
+                - Custom metrics as defined in your critic model
         cell_line: Target cell line name (e.g., 'HEK293')
         include_instructions: Whether to include natural language instructions
+        target_efficiency: DEPRECATED - Use target_metrics instead.
+            Kept for backward compatibility.
         
     Returns:
         Formatted prompt string
+        
+    Examples:
+        # Multi-metric prompt
+        >>> prompt = format_conditional_prompt(
+        ...     utr5="AUGCAUGC",
+        ...     utr3="GCUAGCUA",
+        ...     amino_acid_sequence="MVKL",
+        ...     target_metrics={'translation_efficiency': 0.85, 'half_life': 12.0}
+        ... )
+        
+        # Single metric (backward compatible)
+        >>> prompt = format_conditional_prompt(
+        ...     utr5="AUGCAUGC",
+        ...     utr3="GCUAGCUA", 
+        ...     amino_acid_sequence="MVKL",
+        ...     target_efficiency=0.85
+        ... )
     """
+    # Backward compatibility: convert target_efficiency to target_metrics
+    if target_metrics is None:
+        if target_efficiency is not None:
+            target_metrics = {'translation_efficiency': target_efficiency}
+        else:
+            target_metrics = {'translation_efficiency': 0.5}  # Default
+    
+    # Metric display names for readable prompts
+    METRIC_DISPLAY_NAMES = {
+        'translation_efficiency': 'TE',
+        'half_life': 'Half-Life (h)',
+        'stability': 'Stability',
+        'expression_level': 'Expression'
+    }
+    
     prompt = ""
     
     if include_instructions:
-        prompt += f"Generate an RNA sequence with translation efficiency {target_efficiency:.2f}"
+        # Build natural language instruction with all target metrics
+        metric_descriptions = []
+        for metric, value in target_metrics.items():
+            display_name = METRIC_DISPLAY_NAMES.get(metric, metric.replace('_', ' ').title())
+            if metric == 'translation_efficiency':
+                metric_descriptions.append(f"translation efficiency {value:.2f}")
+            elif metric == 'half_life':
+                metric_descriptions.append(f"half-life of {value:.1f}h")
+            else:
+                metric_descriptions.append(f"{display_name.lower()} of {value:.2f}")
+        
+        prompt += f"Generate an RNA sequence with {', '.join(metric_descriptions)}"
         if cell_line:
             prompt += f" in {cell_line} cells"
         prompt += ".\n"
@@ -232,7 +285,12 @@ def format_conditional_prompt(
         prompt += f"Cell Line: {cell_line}\n"
     prompt += f"5'UTR: {utr5_dna}\n"
     prompt += f"CDS encoding: {amino_acid_sequence}\n"
-    prompt += f"Target TE: {target_efficiency:.2f}\n"
+    
+    # Add all target metrics to prompt
+    for metric, value in target_metrics.items():
+        display_name = METRIC_DISPLAY_NAMES.get(metric, metric.replace('_', ' ').title())
+        prompt += f"Target {display_name}: {value:.2f}\n"
+    
     prompt += "CDS: "  # Model should complete this
     
     return prompt
