@@ -5,8 +5,12 @@ Supports translation efficiency, mRNA half-life, and other metrics.
 
 import torch
 import torch.nn as nn
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple, TYPE_CHECKING
 import numpy as np
+
+# Conditional import for type hints
+if TYPE_CHECKING:
+    from src.training.evaluation import EvaluationTracker, TrainingConfig
 
 
 class MultiMetricCritic(nn.Module):
@@ -399,6 +403,152 @@ class MultiMetricTrainer:
         self.val_losses = checkpoint.get('val_losses', self.val_losses)
         self.metric_weights = checkpoint.get('metric_weights', self.metric_weights)
         print(f"Checkpoint loaded from {path}")
+    
+    def train_with_evaluation(
+        self,
+        train_loader,
+        val_loader,
+        test_loader=None,
+        num_epochs: int = 50,
+        early_stopping_patience: int = 10,
+        checkpoint_path: str = "models/critic_best.pt",
+        save_history_path: Optional[str] = "models/training_history.json",
+        verbose: bool = True
+    ) -> Dict[str, any]:
+        """
+        Complete training loop with evaluation tracking and early stopping.
+        
+        This method provides a comprehensive training workflow:
+        1. Trains for specified epochs with validation after each
+        2. Tracks metrics (loss, R²) for all target metrics
+        3. Implements early stopping to prevent overfitting
+        4. Saves best model checkpoint automatically
+        5. Evaluates on test set at the end
+        
+        Args:
+            train_loader: Training data DataLoader
+            val_loader: Validation/dev data DataLoader
+            test_loader: Optional test data DataLoader (for final evaluation)
+            num_epochs: Maximum number of training epochs (default: 50)
+                - 30-100 epochs typically sufficient for critic
+                - More epochs if data is large and model is complex
+            early_stopping_patience: Epochs without improvement before stopping (default: 10)
+                - Higher (15-20) for noisy data
+                - Lower (5-7) for quick experiments
+            checkpoint_path: Where to save best model checkpoint
+            save_history_path: Where to save training history JSON (None to skip)
+            verbose: Whether to print progress
+            
+        Returns:
+            Dictionary with training results:
+                - 'best_epoch': Epoch with best validation performance
+                - 'best_val_r2': Best validation R² achieved
+                - 'final_test_results': Test set results (if test_loader provided)
+                - 'training_history': Dict with train/val loss/R² per epoch
+                
+        Example:
+            >>> trainer = MultiMetricTrainer(model)
+            >>> results = trainer.train_with_evaluation(
+            ...     train_loader, val_loader, test_loader,
+            ...     num_epochs=100,
+            ...     early_stopping_patience=15
+            ... )
+            >>> print(f"Best R²: {results['best_val_r2']:.4f}")
+            
+        Monitoring Progress:
+            Watch these indicators during training:
+            - Train/val loss should decrease (lower is better)
+            - R² should increase toward 1.0 (higher is better)
+            - Gap between train/val metrics indicates overfitting
+            - ★ symbol indicates best epoch so far
+        """
+        # Lazy import to avoid circular dependencies
+        from src.training.evaluation import EvaluationTracker, TrainingConfig
+        
+        # Create tracker with config
+        config = TrainingConfig(
+            num_epochs=num_epochs,
+            early_stopping_patience=early_stopping_patience,
+            primary_metric='loss',
+            higher_is_better=False,
+            verbose=verbose
+        )
+        tracker = EvaluationTracker(config)
+        tracker.start_training()
+        
+        best_val_r2 = -float('inf')
+        
+        for epoch in range(num_epochs):
+            # Train epoch
+            train_metrics = self.train_epoch(train_loader, verbose=False)
+            train_loss = train_metrics.get('total', sum(train_metrics.values()) / len(train_metrics))
+            tracker.log_train_metrics(epoch, {'loss': train_loss, **train_metrics})
+            
+            # Validate
+            val_results = self.validate(val_loader)
+            
+            # Aggregate validation metrics
+            val_loss = np.mean([v[0] for v in val_results.values()])
+            val_r2 = np.mean([v[1] for v in val_results.values()])
+            
+            val_metrics = {
+                'loss': val_loss,
+                'avg_r2': val_r2,
+                **{f"{k}_r2": v[1] for k, v in val_results.items()}
+            }
+            
+            is_best = tracker.log_val_metrics(epoch, val_metrics)
+            
+            # Track best R²
+            if val_r2 > best_val_r2:
+                best_val_r2 = val_r2
+                if checkpoint_path:
+                    self.save_checkpoint(checkpoint_path)
+            
+            # Print progress
+            if verbose:
+                tracker.print_epoch_summary(
+                    epoch,
+                    {'loss': train_loss},
+                    {'loss': val_loss, 'r2': val_r2}
+                )
+            
+            # Check early stopping
+            if tracker.should_stop():
+                break
+        
+        # Evaluate on test set if provided
+        test_results = None
+        if test_loader is not None:
+            if verbose:
+                print("\nEvaluating on test set...")
+            
+            from src.training.evaluation import evaluate_model
+            test_results = evaluate_model(
+                self.model,
+                test_loader,
+                self.device
+            )
+            tracker.log_test_results(test_results)
+        
+        # Save history
+        if save_history_path:
+            tracker.save_history(save_history_path)
+        
+        # Print summary
+        if verbose:
+            tracker.print_summary()
+        
+        return {
+            'best_epoch': tracker.best_epoch + 1,
+            'best_val_r2': best_val_r2,
+            'final_test_results': test_results,
+            'training_history': {
+                'train': tracker.train_history,
+                'val': tracker.val_history
+            },
+            'stopped_early': tracker._stopped_early
+        }
 
 
 if __name__ == "__main__":

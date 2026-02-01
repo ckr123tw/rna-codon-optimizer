@@ -155,19 +155,47 @@ class RNACodonOptimizationPipeline:
         hidden_dims: List[int] = [512, 256],
         num_epochs: int = 50,
         batch_size: int = 32,
-        learning_rate: float = 1e-3
+        learning_rate: float = 1e-3,
+        early_stopping_patience: int = 10,
+        train_ratio: float = 0.70,
+        dev_ratio: float = 0.15,
+        test_ratio: float = 0.15,
+        use_3way_split: bool = True
     ) -> Dict:
         """
         Step 2: Train critic model to predict translation efficiency.
         
         Args:
-            hidden_dims: Hidden layer dimensions for MLP
-            num_epochs: Number of training epochs
-            batch_size: Batch size
-            learning_rate: Learning rate
+            hidden_dims: Hidden layer dimensions for MLP (default: [512, 256])
+                - Larger networks [512, 256, 128] for complex patterns
+                - Smaller [256, 128] for limited data
+            num_epochs: Maximum number of training epochs (default: 50)
+                - 30-100 epochs typically sufficient
+                - Early stopping will halt if no improvement
+            batch_size: Samples per training batch (default: 32)
+                - Larger (64-128) for faster training
+                - Smaller (16) for more stochastic updates
+            learning_rate: Optimizer learning rate (default: 1e-3)
+                - 1e-3 works well for critic training
+                - Try 1e-4 if training is unstable
+            early_stopping_patience: Epochs without improvement before stopping (default: 10)
+                - Higher (15-20) for noisy data
+                - Lower (5-7) for quick experiments
+            train_ratio: Fraction of data for training (default: 0.70)
+            dev_ratio: Fraction for development/validation (default: 0.15)
+            test_ratio: Fraction for final testing (default: 0.15)
+            use_3way_split: Whether to use train/dev/test splits (default: True)
+                - False uses legacy 80/20 train/val split
             
         Returns:
-            Training statistics
+            Training statistics including best epoch, R² scores, and test results
+            
+        Monitoring Training:
+            Watch the console output for:
+            - Train/Val Loss: Should decrease (lower is better)
+            - R² Score: Should increase toward 1.0 (higher is better)
+            - ★ symbol: Indicates best epoch so far
+            - Early stopping warning: Triggers when validation plateaus
         """
         print("\n" + "=" * 60)
         print("STEP 2: Training Translation Efficiency Critic")
@@ -185,15 +213,36 @@ class RNACodonOptimizationPipeline:
         
         print(f"Critic architecture initialized for {self.num_cell_lines} cell lines.")
         print(f"Total parameters: {self.critic.get_num_parameters():,}")
+        print(f"Target metrics: {self.target_metrics}")
         
-        # Create data loaders
-        train_loader, val_loader = create_data_loaders(
-            self.embeddings,
-            self.targets_dict,
-            cell_line_indices=getattr(self, 'cell_line_indices', None),
-            train_split=0.8,
-            batch_size=batch_size
-        )
+        # Create data loaders with optional 3-way split
+        if use_3way_split:
+            from src.training import create_data_loaders_with_test, DataSplitConfig
+            
+            split_config = DataSplitConfig(
+                train_ratio=train_ratio,
+                dev_ratio=dev_ratio,
+                test_ratio=test_ratio,
+                batch_size=batch_size,
+                random_seed=42
+            )
+            
+            train_loader, val_loader, test_loader = create_data_loaders_with_test(
+                self.embeddings,
+                self.targets_dict,
+                cell_line_indices=getattr(self, 'cell_line_indices', None),
+                config=split_config
+            )
+        else:
+            # Legacy 2-way split
+            train_loader, val_loader = create_data_loaders(
+                self.embeddings,
+                self.targets_dict,
+                cell_line_indices=getattr(self, 'cell_line_indices', None),
+                train_split=0.8,
+                batch_size=batch_size
+            )
+            test_loader = None
         
         # Create trainer
         trainer = MultiMetricTrainer(
@@ -202,40 +251,21 @@ class RNACodonOptimizationPipeline:
             device=str(self.device)
         )
         
-        # Training loop
-        print(f"\nTraining for {num_epochs} epochs...")
-        best_val_r2 = -float('inf')
+        # Train with comprehensive evaluation
+        print(f"\nTraining for up to {num_epochs} epochs (early stopping patience: {early_stopping_patience})...")
         
-        for epoch in range(num_epochs):
-            # Train
-            train_loss = trainer.train_epoch(train_loader, verbose=False)
-            
-            # Validate
-            val_results = trainer.validate(val_loader)
-            
-            # Aggregate metrics
-            val_loss = np.mean([v[0] for v in val_results.values()])
-            val_r2 = np.mean([v[1] for v in val_results.values()])
-            
-            if (epoch + 1) % 10 == 0:
-                metrics_str = ", ".join([f"{k}: R²={v[1]:.2f}" for k, v in val_results.items()])
-                print(f"Epoch {epoch + 1}/{num_epochs} - "
-                      f"Avg Loss: {val_loss:.4f}, "
-                      f"Avg R²: {val_r2:.4f} "
-                      f"({metrics_str})")
-            
-            # Save best model (using Average R2)
-            if val_r2 > best_val_r2:
-                best_val_r2 = val_r2
-                trainer.save_checkpoint('models/critic_best.pt')
+        results = trainer.train_with_evaluation(
+            train_loader=train_loader,
+            val_loader=val_loader,
+            test_loader=test_loader,
+            num_epochs=num_epochs,
+            early_stopping_patience=early_stopping_patience,
+            checkpoint_path='models/critic_best.pt',
+            save_history_path='models/critic_training_history.json',
+            verbose=True
+        )
         
-        print(f"\nTraining complete! Best validation R²: {best_val_r2:.4f}")
-        
-        return {
-            'final_train_loss': train_loss,
-            'final_val_loss': val_loss,
-            'best_val_r2': best_val_r2
-        }
+        return results
     
     def step3_initialize_lora(
         self,

@@ -14,7 +14,44 @@ from dataclasses import dataclass
 
 @dataclass
 class PPOTrainingConfig:
-    """Configuration for PPO training."""
+    """
+    Configuration for PPO training.
+    
+    Hyperparameters (Tuning Guide):
+        learning_rate: Policy learning rate (default: 1e-5)
+            - 1e-5 to 1e-6 for stable LoRA fine-tuning
+            - Higher (1e-4) may cause instability
+            
+        batch_size: Number of samples per PPO update (default: 4)
+            - Larger (8-16) for more stable gradients
+            - Smaller (2-4) for faster iteration
+            
+        mini_batch_size: Samples per gradient step (default: 1)
+            - Increase if memory allows for better gradients
+            
+        ppo_epochs: PPO updates per batch of data (default: 4)
+            - Higher (6-8) for more learning per sample
+            - Too high may cause overfitting to batch
+            
+        cliprange: PPO clipping parameter (default: 0.2)
+            - Limits policy updates to prevent instability
+            - Lower (0.1) for more conservative updates
+            
+        target_kl: Target KL divergence (default: 6.0)
+            - Training stops early if KL exceeds this
+            - Lower (0.01-0.1) for more stability
+            
+        init_kl_coef: Initial KL penalty coefficient (default: 0.2)
+            - Balances reward vs staying close to original policy
+            
+    Example:
+        >>> config = PPOTrainingConfig(
+        ...     learning_rate=5e-6,
+        ...     batch_size=8,
+        ...     ppo_epochs=4,
+        ...     target_kl=0.1
+        ... )
+    """
     learning_rate: float = 1e-5
     batch_size: int = 4
     mini_batch_size: int = 1
@@ -221,26 +258,75 @@ class RNAPPOTrainer:
         target_efficiencies: List[float],
         amino_acid_sequences: List[str],
         num_epochs: int = 10,
-        steps_per_epoch: int = 100
-    ):
+        steps_per_epoch: int = 100,
+        eval_prompts: Optional[List[str]] = None,
+        eval_targets: Optional[List[float]] = None,
+        eval_aa_seqs: Optional[List[str]] = None,
+        early_stopping_patience: int = 5,
+        save_stats_path: Optional[str] = "models/ppo_training_stats.json",
+        verbose: bool = True
+    ) -> Dict[str, any]:
         """
-        Train the LoRA model using PPO.
+        Train the LoRA model using PPO with evaluation tracking.
         
         Args:
             prompts: Training prompts
             target_efficiencies: Target TE values
             amino_acid_sequences: Amino acid sequences
-            num_epochs: Number of training epochs
-            steps_per_epoch: Steps per epoch
+            num_epochs: Number of training epochs (default: 10)
+                - 5-20 epochs typical for PPO
+                - More epochs may lead to reward hacking
+            steps_per_epoch: Training steps per epoch (default: 100)
+                - More steps = more samples per epoch
+            eval_prompts: Optional held-out prompts for evaluation
+            eval_targets: Optional held-out target values
+            eval_aa_seqs: Optional held-out amino acid sequences
+            early_stopping_patience: Epochs without reward improvement before stopping (default: 5)
+            save_stats_path: Path to save training statistics JSON
+            verbose: Whether to print progress
+            
+        Returns:
+            Dictionary with training results and statistics
+            
+        Monitoring PPO Training:
+            Watch these metrics during training:
+            
+            1. **Average Reward** ↑: Should increase, indicates policy improvement
+            2. **Reward Variance**: High initially, should stabilize
+            3. **Min/Max Reward**: Shows range of outcomes
+            4. **Early Stopping**: Triggers if rewards plateau
+            
+        Example:
+            >>> results = ppo_trainer.train(
+            ...     prompts, targets, aa_seqs,
+            ...     num_epochs=20,
+            ...     steps_per_epoch=50,
+            ...     early_stopping_patience=5
+            ... )
+            >>> print(f"Best epoch: {results['best_epoch']}")
         """
         print("=" * 60)
         print("Starting PPO Training")
         print("=" * 60)
+        print(f"Configuration:")
+        print(f"  Epochs: {num_epochs}")
+        print(f"  Steps/epoch: {steps_per_epoch}")
+        print(f"  Batch size: {self.config.batch_size}")
+        print(f"  Early stopping patience: {early_stopping_patience}")
+        print("=" * 60)
+        
+        # Tracking
+        all_epoch_stats = []
+        best_avg_reward = -float('inf')
+        best_epoch = 0
+        epochs_without_improvement = 0
         
         for epoch in range(num_epochs):
             print(f"\nEpoch {epoch + 1}/{num_epochs}")
+            print("-" * 40)
             
             epoch_rewards = []
+            epoch_step_stats = []
             
             for step in range(steps_per_epoch):
                 # Sample a batch
@@ -254,19 +340,86 @@ class RNAPPOTrainer:
                 # Training step
                 stats = self.train_step(batch_prompts, batch_targets, batch_aa_seqs)
                 epoch_rewards.append(stats['avg_reward'])
+                epoch_step_stats.append(stats)
                 
-                if (step + 1) % 20 == 0:
+                if verbose and (step + 1) % 20 == 0:
                     print(f"  Step {step + 1}/{steps_per_epoch}, "
                           f"Avg Reward: {stats['avg_reward']:.4f}")
             
+            # Epoch statistics
             avg_epoch_reward = np.mean(epoch_rewards)
-            print(f"Epoch {epoch + 1} Average Reward: {avg_epoch_reward:.4f}")
+            std_epoch_reward = np.std(epoch_rewards)
+            min_epoch_reward = np.min(epoch_rewards)
+            max_epoch_reward = np.max(epoch_rewards)
+            
+            epoch_summary = {
+                'epoch': epoch + 1,
+                'avg_reward': avg_epoch_reward,
+                'std_reward': std_epoch_reward,
+                'min_reward': min_epoch_reward,
+                'max_reward': max_epoch_reward,
+                'steps': epoch_step_stats
+            }
+            all_epoch_stats.append(epoch_summary)
+            
+            # Check improvement
+            improvement_marker = ""
+            if avg_epoch_reward > best_avg_reward:
+                best_avg_reward = avg_epoch_reward
+                best_epoch = epoch + 1
+                epochs_without_improvement = 0
+                improvement_marker = " ★ (best)"
+            else:
+                epochs_without_improvement += 1
+            
+            print(f"\nEpoch {epoch + 1} Summary:{improvement_marker}")
+            print(f"  Avg Reward:  {avg_epoch_reward:.4f} ± {std_epoch_reward:.4f}")
+            print(f"  Range:       [{min_epoch_reward:.4f}, {max_epoch_reward:.4f}]")
+            
+            # Evaluate on held-out set if provided
+            if eval_prompts is not None and eval_targets is not None and eval_aa_seqs is not None:
+                eval_data = self.generate_and_score_batch(eval_prompts, eval_targets, eval_aa_seqs)
+                eval_avg = np.mean(eval_data['rewards'])
+                print(f"  Eval Reward: {eval_avg:.4f}")
+                epoch_summary['eval_reward'] = eval_avg
+            
+            # Early stopping
+            if epochs_without_improvement >= early_stopping_patience:
+                print(f"\n⚠ Early stopping triggered at epoch {epoch + 1}")
+                print(f"  No improvement for {early_stopping_patience} epochs")
+                print(f"  Best avg reward: {best_avg_reward:.4f} at epoch {best_epoch}")
+                break
+        
+        # Save statistics
+        if save_stats_path:
+            self.training_stats['epoch_stats'] = all_epoch_stats
+            self.training_stats['best_epoch'] = best_epoch
+            self.training_stats['best_avg_reward'] = best_avg_reward
+            self.save_training_stats(save_stats_path)
+        
+        # Final summary
+        print("\n" + "=" * 60)
+        print("PPO Training Complete")
+        print("=" * 60)
+        print(f"  Total epochs: {epoch + 1}")
+        print(f"  Best epoch: {best_epoch}")
+        print(f"  Best avg reward: {best_avg_reward:.4f}")
+        
+        return {
+            'best_epoch': best_epoch,
+            'best_avg_reward': best_avg_reward,
+            'total_epochs': epoch + 1,
+            'epoch_stats': all_epoch_stats,
+            'stopped_early': epochs_without_improvement >= early_stopping_patience
+        }
     
     def save_training_stats(self, path: str):
         """Save training statistics to file."""
         import json
+        from pathlib import Path as FilePath
+        FilePath(path).parent.mkdir(parents=True, exist_ok=True)
         with open(path, 'w') as f:
-            json.dump(self.training_stats, f, indent=2)
+            json.dump(self.training_stats, f, indent=2, default=str)
         print(f"Training stats saved to {path}")
 
 
